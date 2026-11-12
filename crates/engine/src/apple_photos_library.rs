@@ -1,6 +1,7 @@
 //! Read Apple Photos libraries (issue #1622, Phase 1): assets, albums, folders and keywords.
 //!
-//! [`PhotosSource`] is what the rest of LightCraft sees. [`SqliteSource`] is the backend for any
+//! [`PhotosSource`] is what the rest of LightCraft sees. [`PhotoKitSource`] reads the System Photo
+//! Library through Apple's PhotoKit (with the user's permission). [`SqliteSource`] is the backend for any
 //! `.photoslibrary` package: it reads `database/Photos.sqlite` and its committed WAL frames with the
 //! clean-room page reader in [`crate::lightroom_sqlite`]. It never writes inside the package: no
 //! SQLite runtime, no lock or `-shm` file, no sidecars.
@@ -57,6 +58,12 @@ pub enum PhotosError {
     Changed,
     #[error("reading the Photos library was cancelled")]
     Cancelled,
+    /// PhotoKit refused: the user or a policy has not allowed access (System Settings › Privacy & Security › Photos).
+    #[error("{0}")]
+    NotAllowed(String),
+    /// PhotoKit can't be used here (not macOS, or a build without a Photos usage description).
+    #[error("{0}")]
+    Unavailable(String),
     #[error("cannot read the Photos library: {0}")]
     Unreadable(String),
 }
@@ -367,7 +374,8 @@ impl Table {
 
     fn text(&self, row: &Record, column: &str) -> Option<String> {
         match self.value(row, column)? {
-            Value::Text(s) if !s.is_empty() => Some(s.clone()),
+            // whitespace-only is no value: some cameras write a caption of 31 spaces
+            Value::Text(s) if !s.trim().is_empty() => Some(s.clone()),
             _ => None,
         }
     }
@@ -770,6 +778,9 @@ fn read_album_assets(
     }
     Ok(out)
 }
+
+mod photokit_source;
+pub use photokit_source::PhotoKitSource;
 
 #[cfg(test)]
 mod fixture;

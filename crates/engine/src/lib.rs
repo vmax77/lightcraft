@@ -18,6 +18,8 @@ extern crate lightcraft_denoise_core as lightcraft_denoise;
 pub mod activity;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos;
+// reads library files on disk, which the web build has none of (and needs `chrono`, native only)
+#[cfg(not(target_arch = "wasm32"))]
 pub mod apple_photos_library;
 pub mod availability;
 pub(crate) mod camera_preview;

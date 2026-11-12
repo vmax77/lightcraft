@@ -388,3 +388,127 @@ fn real_library_opens_when_named() {
     );
     assert!(!assets.is_empty());
 }
+
+mod photokit {
+    use super::super::photokit_source::{map_albums, map_asset, uuid_of};
+    use super::*;
+    use lightcraft_photokit as pk;
+
+    fn known_a() -> PhotosAsset {
+        let library = Library::new(&fixture::photos_tables(Layout::Photos6));
+        asset(&open(&library).unwrap(), ASSET_A)
+    }
+
+    #[test]
+    fn local_identifiers_give_uuids() {
+        assert_eq!(uuid_of(&format!("{ASSET_A}/L0/001")).as_deref(), Some(ASSET_A));
+        assert_eq!(uuid_of(ASSET_A).as_deref(), Some(ASSET_A));
+        for bad in ["", "/L0/001", "../x/L0/001", "a b/L0/001", &"A".repeat(100)] {
+            assert_eq!(uuid_of(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn photokit_assets_are_completed_from_photos_sqlite() {
+        let known = known_a();
+        // 2021-06-15T12:00:00.5Z, as PhotoKit gives it (seconds since 1970)
+        let photokit = pk::Asset {
+            local_id: format!("{ASSET_A}/L0/001"),
+            kind: Some(pk::MediaKind::Image),
+            live_photo: true,
+            width: 4032,
+            height: 3024,
+            created: Some(1_623_758_400.5),
+            location: Some((48.5, -3.25)),
+            favourite: true,
+            ..pk::Asset::default()
+        };
+        let mapped = map_asset(photokit.clone(), Some(&known)).unwrap();
+        assert_eq!(mapped.created.unwrap().to_rfc3339(), "2021-06-15T14:00:00.500+02:00", "time zone from Photos.sqlite");
+        assert_eq!((mapped.title.as_deref(), mapped.caption.as_deref()), (Some("Harbour at noon"), Some("Boats, gulls and a lighthouse.")));
+        assert_eq!(mapped.keywords, ["boats", "sea"]);
+        assert_eq!(
+            (mapped.original_path, mapped.availability, mapped.original_size),
+            (known.original_path.clone(), Availability::Local, Some(2_345_678))
+        );
+        assert_eq!(mapped.original_file_name.as_deref(), Some("IMG_0001.HEIC"));
+        assert!(mapped.favourite && mapped.live_photo && !mapped.trashed);
+
+        // macOS 27: PhotoKit's own caption and keywords win, even when empty
+        let newer =
+            pk::Asset { caption: None, keywords: Some(vec!["harbour".into()]), original_file_name: Some("IMG_1.HEIC".into()), ..photokit.clone() };
+        let mapped = map_asset(newer, Some(&known)).unwrap();
+        assert_eq!((mapped.caption, mapped.keywords, mapped.original_file_name.as_deref()), (None, vec!["harbour".to_string()], Some("IMG_1.HEIC")));
+
+        let alone = map_asset(photokit, None).unwrap();
+        assert_eq!(alone.created.unwrap().to_rfc3339(), "2021-06-15T12:00:00.500+00:00");
+        assert_eq!((alone.title, alone.original_path, alone.availability), (None, None, Availability::Unknown));
+    }
+
+    #[test]
+    fn hostile_photokit_values_are_dropped() {
+        let bad = pk::Asset {
+            local_id: format!("{ASSET_B}/L0/001"),
+            kind: None,
+            width: u64::MAX,
+            height: 0,
+            created: Some(f64::NAN),
+            location: Some((120.0, 0.0)),
+            ..pk::Asset::default()
+        };
+        let mapped = map_asset(bad, None).unwrap();
+        assert_eq!((mapped.width, mapped.height, mapped.created, mapped.location, mapped.kind), (None, None, None, None, AssetKind::Other(0)));
+        assert_eq!(map_asset(pk::Asset { local_id: "../../etc".into(), ..pk::Asset::default() }, None), None);
+        assert_eq!(map_asset(pk::Asset { local_id: String::new(), created: Some(1e300), ..pk::Asset::default() }, None), None);
+    }
+
+    #[test]
+    fn photokit_albums_map_to_uuids_parents_first() {
+        let album = |id: &str, folder: bool, parent: Option<&str>| pk::Album {
+            local_id: format!("{id}/L0/040"),
+            title: Some(id.into()),
+            folder,
+            parent: parent.map(|p| format!("{p}/L0/020")),
+        };
+        let input = [
+            album("F1", true, None),
+            album("A1", false, Some("F1")),
+            album("A1", false, None),
+            album("A2", false, Some("missing")),
+            album("bad id", false, None),
+            pk::Album { local_id: "A3/L0/040".into(), title: None, folder: false, parent: None },
+        ];
+        let (albums, ids) = map_albums(&input);
+        let got: Vec<_> = albums.iter().map(|a| (a.uuid.as_str(), a.kind, a.parent.as_deref(), a.title.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                ("F1", AlbumKind::Folder, None, "F1"),
+                ("A1", AlbumKind::Album, Some("F1"), "A1"),
+                ("A2", AlbumKind::Album, None, "A2"),
+                ("A3", AlbumKind::Album, None, "")
+            ]
+        );
+        assert_eq!(ids.get("A1").map(String::as_str), Some("A1/L0/040"));
+    }
+
+    #[test]
+    fn photokit_source_without_access_is_a_clear_error() {
+        // a test binary has no NSPhotoLibraryUsageDescription, so PhotoKit is never called
+        let err = PhotoKitSource::open(None).unwrap_err();
+        assert!(matches!(err, PhotosError::Unavailable(_)), "{err}");
+    }
+}
+
+#[test]
+fn blank_captions_titles_and_keywords_are_no_text() {
+    let mut tables = fixture::photos_tables(Layout::Photos6);
+    let blank = " ".repeat(31);
+    table(&mut tables, "ZASSETDESCRIPTION").rows[0].1[2] = t(&blank);
+    table(&mut tables, "ZADDITIONALASSETATTRIBUTES").rows[0].1[4] = t("\t \n");
+    table(&mut tables, "ZKEYWORD").row(&[("Z_PK", V::Int(33)), ("ZTITLE", t("   "))]);
+    table(&mut tables, "Z_1KEYWORDS").row(&[("Z_1ASSETATTRIBUTES", V::Int(11)), ("Z_54KEYWORDS", V::Int(33))]);
+    let a = asset(&open_tables(&tables).unwrap(), ASSET_A);
+    assert_eq!((a.caption, a.title), (None, None));
+    assert_eq!(a.keywords, ["boats", "sea"]);
+}

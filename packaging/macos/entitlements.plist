@@ -11,5 +11,10 @@
        prompt shows NSAppleEventsUsageDescription from Info.plist. -->
   <key>com.apple.security.automation.apple-events</key>
   <true/>
+  <!-- Reading the System Photo Library through PhotoKit (crates/photokit, issue #1622). Under the
+       hardened runtime macOS refuses PhotoKit access without this entitlement; the prompt shows
+       NSPhotoLibraryUsageDescription from Info.plist. -->
+  <key>com.apple.security.personal-information.photos-library</key>
+  <true/>
 </dict>
 </plist>

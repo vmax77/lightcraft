@@ -89,8 +89,10 @@ of it.
   "unsupported" error or is disabled. Sole exception: a provably infallible literal, as `#[allow(clippy::expect_used)]`
   + `.expect("why it can't fail")`.
 - **`unsafe` lives only in `crates/sysmem`** (one FFI call, `malloc_zone_pressure_relief`, that returns freed
-  allocator pages to macOS after raw decodes) **and `crates/wincolor`** (Win32 calls that read the colour profile
-  Windows assigns to the monitor showing the window, and whether Windows colour-manages that monitor itself). Every
+  allocator pages to macOS after raw decodes), **`crates/wincolor`** (Win32 calls that read the colour profile
+  Windows assigns to the monitor showing the window, and whether Windows colour-manages that monitor itself)
+  **and `crates/photokit`** (PhotoKit calls through `objc2` that read the System Photo Library, after checking
+  that the app has a Photos usage description, without which macOS would terminate it). Every
   other production crate root has `#![forbid(unsafe_code)]`. A new unsafe need goes in an isolated, well-tested helper
   crate like them: `// SAFETY:` on every block, a safe API, a safe fallback where possible, and a line here naming it.
 - **Input-derived numbers are hostile:** `get()` instead of `[i]`/`[a..b]` for offsets from files, users, agents or

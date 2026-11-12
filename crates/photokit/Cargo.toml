@@ -1,0 +1,37 @@
+[package]
+name = "lightcraft-photokit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LightCraft photokit (L0): read the System Photo Library through Apple's PhotoKit. One of the crates allowed `unsafe` (Objective-C calls)."
+
+# The workspace lints: they deny `unsafe_code` (deny, not forbid), which the `imp` module in
+# src/lib.rs allows for its PhotoKit calls; every other crate root has `#![forbid(unsafe_code)]`. See
+# AGENTS.md ("unsafe lives only in ...").
+[lints]
+workspace = true
+
+# objc2-photos and objc2-core-location are `Zlib OR Apache-2.0 OR MIT`, used under MIT (as
+# objc2-app-kit already is); objc2, objc2-foundation and block2 are MIT.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDate", "NSObject", "NSSortDescriptor", "NSString"] }
+objc2-photos = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-location",
+    "PHAsset",
+    "PHAssetResource",
+    "PHCollection",
+    "PHFetchOptions",
+    "PHFetchResult",
+    "PHObject",
+    "PHPhotoLibrary",
+    "PhotosTypes",
+] }
+objc2-core-location = { version = "0.3", default-features = false, features = ["std", "CLLocation"] }
+block2 = { version = "0.6", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# tests record why they skip (`cargo xtask ci` lists the skips)
+lightcraft-testkit = { workspace = true }
