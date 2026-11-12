@@ -44,6 +44,12 @@ const ALBUM_KIND_ALBUM: i64 = 2;
 const ALBUM_KIND_FOLDER: i64 = 4000;
 /// `ZINTERNALRESOURCE.ZDATASTORESUBTYPE` of an original file.
 const RESOURCE_ORIGINAL: i64 = 1;
+/// `ZINTERNALRESOURCE.ZRESOURCETYPE` of a Live Photo's video (stored as `<UUID>_3.mov`).
+const RESOURCE_LIVE_VIDEO: i64 = 3;
+/// `ZINTERNALRESOURCE.ZRESOURCETYPE` of the other original of a RAW+JPEG pair (`<UUID>_4.<ext>`).
+const RESOURCE_ALTERNATE: i64 = 4;
+/// Most entries read from one `originals/<dir>` folder when looking for companions.
+const MAX_DIR_ENTRIES: usize = 2_000_000;
 
 /// Why a Photos library could not be read.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -96,6 +102,20 @@ pub enum Availability {
     Unknown,
 }
 
+/// A file Photos keeps with an asset's original: the other half of a RAW+JPEG pair, or a Live
+/// Photo's video. Photos stores it next to the original as `<UUID>_<resource type>.<ext>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Companion {
+    /// The asset has none.
+    None,
+    /// On this Mac, at this path inside the package.
+    Local(PathBuf),
+    /// Only in iCloud: Photos has to download it first.
+    CloudOnly,
+    /// The library does not say, or says it is here but the file was not found.
+    Unknown,
+}
+
 /// A point on the Earth, in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeoPoint {
@@ -135,6 +155,22 @@ pub struct PhotosAsset {
     pub caption: Option<String>,
     pub keywords: Vec<String>,
     pub availability: Availability,
+    /// The other original of a RAW+JPEG pair. Photos keeps both as one asset; so does LightCraft.
+    pub paired_original: Companion,
+    /// The video of a Live Photo.
+    pub live_video: Companion,
+}
+
+impl PhotosAsset {
+    /// The original files on this Mac: the main original and, for a RAW+JPEG pair, the other half.
+    /// Photos' edits (`.aae` files, rendered versions) are never included.
+    pub fn originals(&self) -> Vec<&Path> {
+        let paired = match &self.paired_original {
+            Companion::Local(path) => Some(path.as_path()),
+            _ => None,
+        };
+        self.original_path.as_deref().into_iter().chain(paired).collect()
+    }
 }
 
 /// Album or folder.
@@ -459,8 +495,9 @@ fn read_library(library: &PhotosLibrary, reader: &TableReader<'_>) -> Result<Sql
     let attributes = reader.optional("ZADDITIONALASSETATTRIBUTES", &mut warnings)?;
     let descriptions = reader.optional("ZASSETDESCRIPTION", &mut warnings)?;
     let keywords = read_keywords(reader, attributes.as_ref(), &table, &mut warnings)?;
-    let availability = read_availability(reader, &mut warnings)?;
-    let lookups = Lookups { library, extra: Extras::new(attributes.as_ref(), descriptions.as_ref()), keywords, availability };
+    let resources = read_resources(reader, &mut warnings)?;
+    let companion_files = companion_files(library, &table, &resources, &mut warnings);
+    let lookups = Lookups { library, extra: Extras::new(attributes.as_ref(), descriptions.as_ref()), keywords, resources, companion_files };
 
     let mut assets = Vec::new();
     let mut by_uuid = HashMap::new();
@@ -590,25 +627,101 @@ fn read_keywords(
     Ok(out)
 }
 
-/// Whether each asset's original is local, by asset `Z_PK`, from `ZINTERNALRESOURCE`.
-fn read_availability(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Result<HashMap<i64, Availability>, PhotosError> {
-    let mut out = HashMap::new();
+/// What `ZINTERNALRESOURCE` says about each asset's files, by asset `Z_PK`.
+#[derive(Default)]
+struct Resources {
+    /// The table was read: an asset missing from the maps below has no such file.
+    known: bool,
+    original: HashMap<i64, Availability>,
+    /// Whether the other original of a RAW+JPEG pair is local.
+    alternate: HashMap<i64, bool>,
+    /// Whether a Live Photo's video is local.
+    live_video: HashMap<i64, bool>,
+}
+
+/// Local wins: an asset with any local copy of a resource has it here.
+fn note(map: &mut HashMap<i64, bool>, asset: i64, local: bool) {
+    *map.entry(asset).or_insert(local) |= local;
+}
+
+fn read_resources(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Result<Resources, PhotosError> {
+    let mut out = Resources::default();
     let Some(table) = reader.optional("ZINTERNALRESOURCE", warnings)? else { return Ok(out) };
     if !table.has("ZASSET") || !table.has("ZLOCALAVAILABILITY") {
         return Ok(out);
     }
+    out.known = table.has("ZRESOURCETYPE");
     for row in &table.rows {
-        let original = table.int(row, "ZDATASTORESUBTYPE").is_none_or(|n| n == RESOURCE_ORIGINAL)
-            && table.int(row, "ZRESOURCETYPE").is_none_or(|n| n == 0 || n == 1)
-            && table.int(row, "ZVERSION").is_none_or(|n| n == 0);
-        let Some(asset) = table.int(row, "ZASSET").filter(|_| original) else { continue };
-        let here = if table.int(row, "ZLOCALAVAILABILITY") == Some(1) { Availability::Local } else { Availability::CloudOnly };
-        let entry = out.entry(asset).or_insert(here);
-        if here == Availability::Local {
-            *entry = Availability::Local;
+        let Some(asset) = table.int(row, "ZASSET") else { continue };
+        let current = table.int(row, "ZVERSION").is_none_or(|n| n == 0);
+        let local = table.int(row, "ZLOCALAVAILABILITY") == Some(1);
+        let kind = table.int(row, "ZRESOURCETYPE");
+        if current && table.int(row, "ZDATASTORESUBTYPE").is_none_or(|n| n == RESOURCE_ORIGINAL) && kind.is_none_or(|n| n == 0 || n == 1) {
+            let here = if local { Availability::Local } else { Availability::CloudOnly };
+            let entry = out.original.entry(asset).or_insert(here);
+            if here == Availability::Local {
+                *entry = Availability::Local;
+            }
+            continue;
+        }
+        // companions of the original, not of an edit (an edit has a recipe)
+        if !current || table.int(row, "ZRECIPEID").is_some_and(|n| n != 0) {
+            continue;
+        }
+        match kind {
+            Some(RESOURCE_ALTERNATE) => note(&mut out.alternate, asset, local),
+            Some(RESOURCE_LIVE_VIDEO) => note(&mut out.live_video, asset, local),
+            _ => {}
         }
     }
     Ok(out)
+}
+
+/// Companion files on disk, by `<UUID>_<resource type>`, from the `originals/<dir>` folders of
+/// assets whose companions the library says are local. Only regular files named exactly
+/// `<UUID>_<3 or 4>.<ext>` are taken; links, folders and anything else are ignored.
+fn companion_files(library: &PhotosLibrary, assets: &Table, resources: &Resources, warnings: &mut Vec<String>) -> HashMap<String, PathBuf> {
+    let wanted = |pk: i64| resources.alternate.get(&pk) == Some(&true) || resources.live_video.get(&pk) == Some(&true);
+    let mut dirs = HashSet::new();
+    for row in &assets.rows {
+        if assets.int(row, "Z_PK").is_some_and(wanted)
+            && let Some(dir) = assets.text(row, "ZDIRECTORY").filter(|d| original_path(library.root(), d, "x").is_some())
+        {
+            dirs.insert(dir);
+        }
+    }
+    let mut out = HashMap::new();
+    let mut sorted: Vec<String> = dirs.into_iter().collect();
+    sorted.sort();
+    for dir in sorted {
+        let folder = library.root().join("originals").join(&dir);
+        let entries = match std::fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(e) => {
+                warnings.push(format!("cannot list originals/{dir}: {e}"));
+                continue;
+            }
+        };
+        for entry in entries.take(MAX_DIR_ENTRIES).filter_map(Result::ok) {
+            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
+            let Ok(name) = entry.file_name().into_string() else { continue };
+            if let Some(stem) = companion_stem(&name) {
+                out.insert(stem.to_owned(), entry.path());
+            }
+        }
+    }
+    out
+}
+
+/// `<UUID>_<3 or 4>` of a companion file name `<UUID>_<3 or 4>.<ext>`, if it is one.
+fn companion_stem(name: &str) -> Option<&str> {
+    let (stem, ext) = name.split_once('.')?;
+    let (uuid, kind) = stem.rsplit_once('_')?;
+    let kind_ok = kind.parse::<i64>().is_ok_and(|k| k == RESOURCE_ALTERNATE || k == RESOURCE_LIVE_VIDEO);
+    let ext_ok = !ext.is_empty() && ext.bytes().all(|b| b.is_ascii_alphanumeric());
+    (kind_ok && ext_ok && valid_uuid(uuid)).then_some(stem)
 }
 
 /// What [`Lookups::asset`] needs besides the asset row.
@@ -616,12 +729,27 @@ struct Lookups<'a> {
     library: &'a PhotosLibrary,
     extra: Extras,
     keywords: HashMap<i64, Vec<String>>,
-    availability: HashMap<i64, Availability>,
+    resources: Resources,
+    companion_files: HashMap<String, PathBuf>,
 }
 
 impl Lookups<'_> {
+    /// A companion of asset `pk` from `map` (local or not), found on disk as `<uuid>_<kind>.*`.
+    fn companion(&self, map: &HashMap<i64, bool>, pk: i64, uuid: &str, kind: i64) -> Companion {
+        if !self.resources.known {
+            return Companion::Unknown;
+        }
+        match map.get(&pk) {
+            None => Companion::None,
+            Some(false) => Companion::CloudOnly,
+            Some(true) => self.companion_files.get(&format!("{uuid}_{kind}")).map_or(Companion::Unknown, |p| Companion::Local(p.clone())),
+        }
+    }
+
     fn asset(&self, table: &Table, row: &Record, pk: i64, uuid: String) -> PhotosAsset {
-        let (library, extra, keywords, availability) = (self.library, &self.extra, &self.keywords, &self.availability);
+        let (library, extra, keywords) = (self.library, &self.extra, &self.keywords);
+        let paired_original = self.companion(&self.resources.alternate, pk, &uuid, RESOURCE_ALTERNATE);
+        let live_video = self.companion(&self.resources.live_video, pk, &uuid, RESOURCE_LIVE_VIDEO);
         let file_name = table.text(row, "ZFILENAME");
         let original_path = table.text(row, "ZDIRECTORY").zip(file_name.as_deref()).and_then(|(dir, file)| original_path(library.root(), &dir, file));
         let kind = match table.int(row, "ZKIND") {
@@ -649,7 +777,9 @@ impl Lookups<'_> {
             title: extra.title.get(&pk).cloned(),
             caption: extra.caption.get(&pk).cloned(),
             keywords: keywords.get(&pk).cloned().unwrap_or_default(),
-            availability: availability.get(&pk).copied().unwrap_or(Availability::Unknown),
+            availability: self.resources.original.get(&pk).copied().unwrap_or(Availability::Unknown),
+            paired_original,
+            live_video,
         }
     }
 }

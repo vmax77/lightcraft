@@ -1,7 +1,8 @@
 //! [`PhotoKitSource`]: the System Photo Library through PhotoKit ([`lightcraft_photokit`]), with the
 //! fields PhotoKit lacks taken from `Photos.sqlite` when that is readable.
 //!
-//! PhotoKit gives no title, original path, time zone, size, or local/iCloud state, and before
+//! PhotoKit gives no title, original path, time zone, size, local/iCloud state or RAW+JPEG and
+//! Live Photo companion paths, and before
 //! macOS 27 no caption or keywords. Those come from a [`SqliteSource`] of the same library, matched
 //! by UUID (the part of PhotoKit's local identifier before the first `/`). Without one they stay
 //! empty. Assets in Recently Deleted are not listed by PhotoKit.
@@ -11,7 +12,9 @@ use std::collections::HashMap;
 use chrono::{DateTime, FixedOffset, Utc};
 use lightcraft_photokit as photokit;
 
-use super::{AlbumKind, AssetKind, Availability, PhotosAlbum, PhotosAsset, PhotosError, PhotosSource, SqliteSource, geo_point, valid_uuid};
+use super::{
+    AlbumKind, AssetKind, Availability, Companion, PhotosAlbum, PhotosAsset, PhotosError, PhotosSource, SqliteSource, geo_point, valid_uuid,
+};
 
 /// Suffix of an asset's PhotoKit local identifier after its UUID, as Photos forms them
 /// (`<UUID>/L0/001`; albums end `/L0/040`, folders `/L0/020`).
@@ -134,6 +137,8 @@ pub(super) fn map_asset(asset: photokit::Asset, known: Option<&PhotosAsset>) -> 
         caption: if asset.keywords.is_some() || asset.caption.is_some() { asset.caption } else { from_known(|k| k.caption.clone()) },
         keywords: asset.keywords.unwrap_or_else(|| known.map(|k| k.keywords.clone()).unwrap_or_default()),
         availability: known.map_or(Availability::Unknown, |k| k.availability),
+        paired_original: known.map_or(Companion::Unknown, |k| k.paired_original.clone()),
+        live_video: known.map_or(Companion::Unknown, |k| k.live_video.clone()),
     })
 }
 

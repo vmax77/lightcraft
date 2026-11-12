@@ -43,6 +43,9 @@ impl Table {
 
     /// Add a row with named values; other columns are NULL. `Z_PK` is the rowid.
     pub fn row(&mut self, values: &[(&str, V)]) -> &mut Self {
+        for (name, _) in values {
+            assert!(self.columns.iter().any(|c| c == name), "{} has no column {name}", self.name);
+        }
         let pk = values.iter().find(|(c, _)| *c == "Z_PK").and_then(|(_, v)| if let V::Int(n) = v { Some(*n) } else { None });
         let rowid = pk.unwrap_or(self.rows.len() as i64 + 1);
         let row = self
@@ -389,7 +392,8 @@ pub fn photos_tables(layout: Layout) -> Vec<Table> {
         .row(&[(album_col, V::Int(41)), (asset_col, V::Int(2)), (fok.as_str(), V::Int(2048))])
         .row(&[(album_col, V::Int(41)), (asset_col, V::Int(1)), (fok.as_str(), V::Int(1024))])
         .row(&[(album_col, V::Int(43)), (asset_col, V::Int(3)), (fok.as_str(), V::Int(1024))]);
-    let mut resources = Table::new("ZINTERNALRESOURCE", &["Z_PK", "ZASSET", "ZRESOURCETYPE", "ZDATASTORESUBTYPE", "ZVERSION", "ZLOCALAVAILABILITY"]);
+    let mut resources =
+        Table::new("ZINTERNALRESOURCE", &["Z_PK", "ZASSET", "ZRESOURCETYPE", "ZDATASTORESUBTYPE", "ZVERSION", "ZRECIPEID", "ZLOCALAVAILABILITY"]);
     resources
         .row(&[
             ("Z_PK", V::Int(51)),

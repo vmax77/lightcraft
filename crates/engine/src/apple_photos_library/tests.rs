@@ -370,7 +370,7 @@ fn real_library_opens_when_named() {
     let assets = source.assets(0, usize::MAX).unwrap();
     let count = |f: &dyn Fn(&PhotosAsset) -> bool| assets.iter().filter(|a| f(a)).count();
     eprintln!(
-        "{:?}: {} assets in {:?}; local {}, cloud-only {}, unknown {}; dated {}, located {}, with path {}, keywords {}, titles {}, captions {}; {} albums; warnings {:?}",
+        "{:?}: {} assets in {:?}; local {}, cloud-only {}, unknown {}; dated {}, located {}, with path {}, keywords {}, titles {}, captions {}; {} albums; RAW+JPEG pairs local {}, cloud-only {}, unknown {}; Live Photo videos local {}, cloud-only {}, unknown {}; warnings {:?}",
         source.schema(),
         assets.len(),
         started.elapsed(),
@@ -384,6 +384,12 @@ fn real_library_opens_when_named() {
         count(&|a| a.title.is_some()),
         count(&|a| a.caption.is_some()),
         source.albums().unwrap().len(),
+        count(&|a| matches!(a.paired_original, Companion::Local(_))),
+        count(&|a| a.paired_original == Companion::CloudOnly),
+        count(&|a| a.paired_original == Companion::Unknown),
+        count(&|a| matches!(a.live_video, Companion::Local(_))),
+        count(&|a| a.live_video == Companion::CloudOnly),
+        count(&|a| a.live_video == Companion::Unknown),
         source.warnings(),
     );
     assert!(!assets.is_empty());
@@ -511,4 +517,140 @@ fn blank_captions_titles_and_keywords_are_no_text() {
     let a = asset(&open_tables(&tables).unwrap(), ASSET_A);
     assert_eq!((a.caption, a.title), (None, None));
     assert_eq!(a.keywords, ["boats", "sea"]);
+}
+
+mod companions {
+    use super::*;
+
+    const ASSET_D: &str = "0A1B2C3D-0000-4000-8000-000000000004";
+
+    fn resource(pk: i64, asset: i64, kind: i64, local: bool) -> [(&'static str, V); 6] {
+        [
+            ("Z_PK", V::Int(pk)),
+            ("ZASSET", V::Int(asset)),
+            ("ZRESOURCETYPE", V::Int(kind)),
+            ("ZDATASTORESUBTYPE", V::Int(if kind == 3 { 18 } else { 17 })),
+            ("ZVERSION", V::Int(0)),
+            ("ZLOCALAVAILABILITY", V::Int(if local { 1 } else { -1 })),
+        ]
+    }
+
+    /// The small library plus asset D (a JPEG with a local RAW), a local Live Photo video for A, a
+    /// cloud-only RAW for B, and a RAW for C that the library says is local but is not on disk.
+    fn tables(layout: Layout) -> Vec<Table> {
+        let mut tables = fixture::photos_tables(layout);
+        let asset_table = if layout == Layout::Photos5 { "ZGENERICASSET" } else { "ZASSET" };
+        table(&mut tables, asset_table).row(&[
+            ("Z_PK", V::Int(4)),
+            ("ZUUID", t(ASSET_D)),
+            ("ZFILENAME", t(&format!("{ASSET_D}.jpeg"))),
+            ("ZDIRECTORY", t("0")),
+            ("ZUNIFORMTYPEIDENTIFIER", t("public.jpeg")),
+        ]);
+        let resources = table(&mut tables, "ZINTERNALRESOURCE");
+        resources.row(&resource(60, 1, 3, true)).row(&resource(61, 2, 4, false)).row(&resource(62, 3, 4, true)).row(&resource(63, 4, 4, true));
+        // an edit's resource (it has a recipe) is not a companion of the original
+        resources.row(&[
+            ("Z_PK", V::Int(64)),
+            ("ZASSET", V::Int(2)),
+            ("ZRESOURCETYPE", V::Int(3)),
+            ("ZVERSION", V::Int(0)),
+            ("ZRECIPEID", V::Int(131_275)),
+            ("ZLOCALAVAILABILITY", V::Int(1)),
+        ]);
+        tables
+    }
+
+    fn write(library: &Library, name: &str) -> PathBuf {
+        let path = library.root.join("originals/0").join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"x").unwrap();
+        path
+    }
+
+    fn check(layout: Layout) {
+        let library = Library::new(&tables(layout));
+        let main_a = write(&library, &format!("{ASSET_A}.heic"));
+        let video = write(&library, &format!("{ASSET_A}_3.mov"));
+        write(&library, &format!("{ASSET_A}_5.aae"));
+        let main_d = write(&library, &format!("{ASSET_D}.jpeg"));
+        let raw = write(&library, &format!("{ASSET_D}_4.raf"));
+        let source = open(&library).unwrap();
+
+        let a = asset(&source, ASSET_A);
+        assert_eq!((a.live_video.clone(), a.paired_original.clone()), (Companion::Local(video), Companion::None));
+        assert_eq!(a.originals(), [main_a.as_path()], "the Live Photo video and the .aae edit file are not originals");
+        assert_eq!(asset(&source, ASSET_B).paired_original, Companion::CloudOnly);
+        assert_eq!(asset(&source, ASSET_B).live_video, Companion::None, "an edit's video is not the Live Photo's");
+        assert_eq!(asset(&source, ASSET_C).paired_original, Companion::Unknown, "said to be local, but not on disk");
+        let d = asset(&source, ASSET_D);
+        assert_eq!(d.paired_original, Companion::Local(raw.clone()));
+        assert_eq!(d.originals(), [main_d.as_path(), raw.as_path()], "a RAW+JPEG pair stays together");
+    }
+
+    #[test]
+    fn raw_jpeg_pairs_and_live_videos_are_found_next_to_the_original() {
+        check(Layout::Photos6);
+    }
+
+    #[test]
+    fn photos5_companions_read_the_same_way() {
+        check(Layout::Photos5);
+    }
+
+    #[test]
+    fn only_plain_companion_files_are_taken() {
+        let library = Library::new(&tables(Layout::Photos6));
+        // a folder, names that are not `<UUID>_<3|4>.<ext>`, and a file of another asset's UUID
+        std::fs::create_dir_all(library.root.join(format!("originals/0/{ASSET_D}_4.raf"))).unwrap();
+        for name in [
+            format!("{ASSET_A}_3"),
+            format!("{ASSET_A}_3."),
+            format!("{ASSET_A}_3.m/v"),
+            format!("{ASSET_A}_x.mov"),
+            format!("{ASSET_A}_33.mov"),
+            "_3.mov".into(),
+        ] {
+            if !name.contains('/') {
+                write(&library, &name);
+            }
+        }
+        #[cfg(unix)]
+        {
+            let target = write(&library, "target.mov");
+            std::os::unix::fs::symlink(&target, library.root.join(format!("originals/0/{ASSET_A}_3.mov"))).unwrap();
+        }
+        let source = open(&library).unwrap();
+        assert_eq!(asset(&source, ASSET_D).paired_original, Companion::Unknown, "a folder is not a file");
+        assert_eq!(asset(&source, ASSET_A).live_video, Companion::Unknown, "a link or an odd name is not taken");
+        for (name, stem) in [
+            (format!("{ASSET_A}_3.mov"), Some(format!("{ASSET_A}_3"))),
+            (format!("{ASSET_A}_4.raf"), Some(format!("{ASSET_A}_4"))),
+            (format!("{ASSET_A}_5.aae"), None),
+            (format!("{ASSET_A}.heic"), None),
+            (format!("{ASSET_A}_4.tar.gz"), None),
+            ("../x_4.raf".into(), None),
+            ("_4.raf".into(), None),
+        ] {
+            assert_eq!(companion_stem(&name).map(str::to_owned), stem, "{name}");
+        }
+    }
+
+    #[test]
+    fn companions_are_unknown_without_the_resource_table_or_folder() {
+        let mut tables = tables(Layout::Photos6);
+        tables.retain(|t| t.name != "ZINTERNALRESOURCE");
+        let source = open_tables(&tables).unwrap();
+        let d = asset(&source, ASSET_D);
+        assert_eq!((d.paired_original, d.live_video), (Companion::Unknown, Companion::Unknown));
+
+        // the library says the RAW is here, but originals/0 does not exist
+        let source = open_tables(&tables_with_resources()).unwrap();
+        assert_eq!(asset(&source, ASSET_D).paired_original, Companion::Unknown);
+        assert!(source.warnings().iter().any(|w| w.contains("originals/0")), "{:?}", source.warnings());
+    }
+
+    fn tables_with_resources() -> Vec<Table> {
+        tables(Layout::Photos6)
+    }
 }
