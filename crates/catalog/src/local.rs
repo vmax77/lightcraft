@@ -67,7 +67,7 @@ impl std::io::Write for Fnv {
     }
 }
 
-/// The folder a file-backed photo is in (`None` for demo photos).
+/// The folder a file-backed photo is in (`None` for demo photos and Photos proxies).
 pub fn folder_of(p: &Photo) -> Option<String> {
     match &p.source {
         // `/` and `\` are both separators whatever the platform (a catalog can move between them)
@@ -76,7 +76,8 @@ pub fn folder_of(p: &Photo) -> Option<String> {
             // a drive or share root keeps its trailing `/` in its key (`c:/`, `//srv/share/`)
             key.rsplit_once('/').map(|(dir, _)| if dir.is_empty() { "/".to_string() } else { crate::query::folder_key(&format!("{dir}/")) })
         }
-        Source::Demo { .. } => None,
+        // demo photos have no folder; Photos proxies are shown by the Photos views, not by folder
+        Source::Demo { .. } | Source::ApplePhotos { .. } => None,
     }
 }
 

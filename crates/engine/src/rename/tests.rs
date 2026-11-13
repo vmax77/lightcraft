@@ -380,7 +380,7 @@ fn failed_rollbacks_are_reported_and_followed() {
     // the catalog matches the disk
     let path = |s: &Session, id: u64| match &s.catalog.photo(PhotoId(id)).unwrap().source {
         Source::File { path } => path.replace('\\', "/"),
-        Source::Demo { .. } => String::new(),
+        Source::Demo { .. } | Source::ApplePhotos { .. } => String::new(),
     };
     assert_eq!(path(&s, 1), "/p/Trip-1.jpg");
     assert_eq!(s.catalog.photo(PhotoId(1)).unwrap().file_name, "Trip-1.jpg");

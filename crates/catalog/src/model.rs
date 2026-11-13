@@ -91,6 +91,18 @@ pub enum Source {
     File { path: String },
     /// A procedurally generated demo scene (by `lightcraft-scenes` id).
     Demo { scene: u32 },
+    /// A proxy for an asset in an Apple Photos library (issue #1622), shown while browsing it. It
+    /// is read only: nothing is ever written for it, not a sidecar and never inside the library
+    /// package. Editing it starts from a copy of the original made into the library's own folder.
+    ApplePhotos {
+        /// The `.photoslibrary` package.
+        library: String,
+        /// Photos' id for the asset.
+        uuid: String,
+        /// The original inside the package, when it is on this Mac; read, never written.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original: Option<String>,
+    },
 }
 
 /// Copyright status (IPTC / XMP Rights Management `xmpRights:Marked`).

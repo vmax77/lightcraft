@@ -142,6 +142,7 @@ impl WireJob {
                 format!("{}:{:?}:{}:{}:{path}", self.cache_generation, self.source_identity, self.max_edge, self.settings.removes_hot_pixels())
             }
             Source::Demo { scene } => format!("{}:{:?}:{}:demo:{scene}", self.cache_generation, self.source_identity, self.max_edge),
+            Source::ApplePhotos { uuid, .. } => format!("{}:{:?}:{}:photos:{uuid}", self.cache_generation, self.source_identity, self.max_edge),
         }
     }
 
@@ -180,7 +181,7 @@ impl WorkerCore {
         }
         match &job.origin {
             Source::File { path } => hash_of_path(path).map(str::to_string),
-            Source::Demo { .. } => None,
+            Source::Demo { .. } | Source::ApplePhotos { .. } => None,
         }
     }
 
@@ -199,6 +200,8 @@ impl WorkerCore {
                     }
                     (Source::File { path }, None) => return Err(format!("{path}: original not found in browser storage")),
                     (origin @ Source::Demo { .. }, _) => self.media.origin_ref(origin, job.max_edge).load_source()?,
+                    // Apple Photos is macOS only: the web build never has a library to read
+                    (Source::ApplePhotos { uuid, .. }, _) => return Err(format!("Apple Photos item {uuid} can't be shown in the browser")),
                 };
                 let cost = src.image.width * src.image.height * 12 + 64;
                 self.sources.insert(key, src.clone(), cost);

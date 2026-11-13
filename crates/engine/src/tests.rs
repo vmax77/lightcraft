@@ -42,6 +42,7 @@ mod merge;
 mod move_to_share;
 mod organize;
 mod persist;
+mod photos_proxy;
 mod prefs;
 mod presets_scale;
 mod preview_prep;

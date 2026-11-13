@@ -123,7 +123,7 @@ fn move_folder_to_asks_off_the_ui_thread_and_moves_with_the_answer() {
     assert!(!std::path::Path::new(&dir.path("trip")).exists());
     let moved = h.app.session.catalog.photos().filter(|p| p.in_library()).all(|p| match &p.source {
         lightcraft_catalog::Source::File { path } => path.replace('\\', "/").starts_with(&dir.path("dest/trip")),
-        lightcraft_catalog::Source::Demo { .. } => false,
+        lightcraft_catalog::Source::Demo { .. } | lightcraft_catalog::Source::ApplePhotos { .. } => false,
     });
     assert!(moved, "the photo is relinked");
     let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
@@ -172,7 +172,7 @@ fn no_library_switch_while_move_folder_to_waits_for_its_destination() {
     assert_eq!(library(&h), Some(first));
     let relinked = h.app.session.catalog.photos().filter(|p| p.in_library()).all(|p| match &p.source {
         lightcraft_catalog::Source::File { path } => path.replace('\\', "/").starts_with(&dir.path("dest/trip")),
-        lightcraft_catalog::Source::Demo { .. } => false,
+        lightcraft_catalog::Source::Demo { .. } | lightcraft_catalog::Source::ApplePhotos { .. } => false,
     });
     assert!(relinked, "the photo is relinked in the first library");
     // and now the switch goes through

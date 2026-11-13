@@ -91,7 +91,7 @@ fn forget_gone(s: &mut Session, dir: &str, subfolders: bool, files: &[String]) -
             // a file left out of the listing is checked on disk: another spelling of its path, or
             // a listing that missed it, keeps it
             Source::File { path } => in_folder(path, dir, subfolders) && !listed.contains(path.as_str()) && !Path::new(path).exists(),
-            Source::Demo { .. } => false,
+            Source::Demo { .. } | Source::ApplePhotos { .. } => false,
         })
         .map(|p| p.id)
         .collect();

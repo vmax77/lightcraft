@@ -920,7 +920,8 @@ fn path_bytes_contains(hay: &[u8], needle: &[u8]) -> bool {
 fn file_path_matches(op: &str, source: &Source, value: &Value) -> bool {
     let path = match source {
         Source::File { path } => path.as_str(),
-        Source::Demo { .. } => "",
+        // a Photos proxy's original is inside the library package, not a path of the library's
+        Source::Demo { .. } | Source::ApplePhotos { .. } => "",
     };
     let Value::String(want) = value else { return file_path_matches_slow(op, path, value) };
     if !path.is_ascii() || !want.is_ascii() {

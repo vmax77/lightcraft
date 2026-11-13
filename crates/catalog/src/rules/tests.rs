@@ -685,7 +685,7 @@ fn file_path_old(op: &str, source: &Source, value: &serde_json::Value) -> bool {
     let want = lower(value);
     let path = match source {
         Source::File { path } => path.replace('\\', "/"),
-        Source::Demo { .. } => String::new(),
+        Source::Demo { .. } | Source::ApplePhotos { .. } => String::new(),
     };
     let want = want.replace('\\', "/");
     match op {

@@ -433,6 +433,18 @@ impl MediaCache {
                     },
                 }
             }
+            // a Photos proxy reads its original in the package (never writes it); one that is
+            // only in iCloud has no file here, and its path fails to load like a missing file
+            Source::ApplePhotos { library, uuid, original } => SourceRef::File {
+                path: original.clone().unwrap_or_else(|| format!("photos:{library}:{uuid}")),
+                max_edge,
+                loader: self.file_loader.clone(),
+                fallback: None,
+                denoise: None,
+                camera_profile: None,
+                outliers: false,
+                reduced: None,
+            },
             Source::File { path } => SourceRef::File {
                 path: path.clone(),
                 max_edge,

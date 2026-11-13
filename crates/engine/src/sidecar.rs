@@ -843,7 +843,8 @@ fn stem_key_into(key: &mut String, original: &str) {
 fn file_path(p: &Photo) -> Option<&str> {
     match &p.source {
         Source::File { path } => Some(path),
-        Source::Demo { .. } => None,
+        // never a sidecar for an Apple Photos proxy: it would be written inside the package
+        Source::Demo { .. } | Source::ApplePhotos { .. } => None,
     }
 }
 

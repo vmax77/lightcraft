@@ -268,7 +268,7 @@ pub fn expand_tokens_with(
                     Source::File { path } => {
                         Path::new(path).parent().and_then(Path::file_name).map(|f| f.to_string_lossy().to_string()).unwrap_or_default()
                     }
-                    Source::Demo { .. } => String::new(),
+                    Source::Demo { .. } | Source::ApplePhotos { .. } => String::new(),
                 },
                 "camera" => p.meta.camera.clone(),
                 "lens" => p.meta.lens.clone(),

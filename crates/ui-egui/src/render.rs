@@ -1729,6 +1729,7 @@ fn render_subject(slot: Slot, photo: PhotoId, source: Option<&lightcraft_catalog
     match source {
         Some(lightcraft_catalog::Source::File { path }) => format!("render {slot:?}, {photo:?}, file {path:?}"),
         Some(lightcraft_catalog::Source::Demo { scene }) => format!("render {slot:?}, {photo:?}, demo scene {scene}"),
+        Some(lightcraft_catalog::Source::ApplePhotos { uuid, .. }) => format!("render {slot:?}, {photo:?}, Apple Photos {uuid:?}"),
         None => format!("render {slot:?}, {photo:?}, source unavailable"),
     }
 }
@@ -1747,6 +1748,7 @@ fn abandoned_line(slot: Slot, request: Option<&Requested>, why: &str) -> String 
         (Slot::Thumb(id) | Slot::ThumbQuick(id), _) => format!("{}: abandoned, {why}", render_subject(slot, id, source)),
         (_, Some(lightcraft_catalog::Source::File { path })) => format!("render {slot:?}, file {path:?}: abandoned, {why}"),
         (_, Some(lightcraft_catalog::Source::Demo { scene })) => format!("render {slot:?}, demo scene {scene}: abandoned, {why}"),
+        (_, Some(lightcraft_catalog::Source::ApplePhotos { uuid, .. })) => format!("render {slot:?}, Apple Photos {uuid:?}: abandoned, {why}"),
         (_, None) => format!("render {slot:?}: abandoned, {why}"),
     }
 }

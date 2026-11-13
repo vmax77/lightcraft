@@ -54,6 +54,8 @@ pub(super) fn plan_rename_core(
             }
         };
         let (to, to_path) = match &p.source {
+            // Photos owns the file and its name: an Apple Photos proxy is not renamed
+            Source::ApplePhotos { .. } => continue,
             Source::File { path } => {
                 let dir = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
                 let base = folded_path(&dir.join(&want).to_string_lossy());
@@ -193,6 +195,8 @@ impl Session {
             let plan = match &p.source {
                 Source::File { path } => by_path.get(path.as_str()).copied(),
                 Source::Demo { .. } => plans.iter().find(|x| x.id == p.id.0 && x.from_path.is_none()),
+                // never planned (below): Photos owns the file and its name
+                Source::ApplePhotos { .. } => None,
             };
             let Some(plan) = plan else { continue };
             let source = match &plan.to_path {

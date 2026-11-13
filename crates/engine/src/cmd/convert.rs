@@ -181,6 +181,8 @@ fn edit_copy(s: &mut Session, p: &Value, id: lightcraft_catalog::PhotoId, opts: 
             Some(d) => d.to_string(),
             None => return Err(bad(C, "a generated demo photo has no folder: give `dir`")),
         },
+        // its folder is inside the Photos library package, which LightCraft never writes
+        Source::ApplePhotos { .. } => return Err(bad(C, format!("{} is in Apple Photos: edit it in LightCraft first", ph.file_name))),
     };
     let mut written = Vec::new();
     let mut write = |path: &str, bytes: &[u8]| -> std::result::Result<(), String> {

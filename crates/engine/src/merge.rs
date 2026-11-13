@@ -414,6 +414,9 @@ impl Session {
             match &p.source {
                 Source::File { path } => sources.push((*id, path.clone())),
                 Source::Demo { .. } => return Err(EngineError::Other(format!("{} is a demo photo; Photo Merge needs photo files", p.file_name))),
+                Source::ApplePhotos { .. } => {
+                    return Err(EngineError::Other(format!("{} is in Apple Photos; edit it in LightCraft before merging", p.file_name)));
+                }
             }
         }
         if sources.len() < kind.min_photos() {
