@@ -1,5 +1,5 @@
 use super::settings_hash::SettingsHashes;
-use super::source::{DecodedSource, DenoiseSpec, PairLoader, RENDERED_MEM_BYTES, SourceLevel, SourceRef, THUMB_SOURCE_BYTES};
+use super::source::{DecodedSource, DenoiseSpec, FileLoader, PairLoader, RENDERED_MEM_BYTES, SourceLevel, SourceRef, THUMB_SOURCE_BYTES};
 use super::{Arc, DcpProfile, DevelopSettings, HashMap, Hasher128, Lru, MediaCache, Photo, PhotoId, PreviewCache, Rgb32f, Source, SourceInfo};
 
 /// The photos that have a cached denoised picture for the denoise model in use. Only memory: nothing here touches the
@@ -433,18 +433,35 @@ impl MediaCache {
                     },
                 }
             }
-            // a Photos proxy reads its original in the package (never writes it); one that is
-            // only in iCloud has no file here, and its path fails to load like a missing file
-            Source::ApplePhotos { library, uuid, original } => SourceRef::File {
-                path: original.clone().unwrap_or_else(|| format!("photos:{library}:{uuid}")),
-                max_edge,
-                loader: self.file_loader.clone(),
-                fallback: None,
-                denoise: None,
-                camera_profile: None,
-                outliers: false,
-                reduced: None,
-            },
+            // A Photos proxy reads files in the package, never writes them. A grid thumbnail comes
+            // from Photos' own small preview of the original (a moment to read, where the original
+            // is a large HEIC or raw), else from the original. A larger view reads the original;
+            // while that is only in iCloud the preview stands in. A full-size render (an export)
+            // never takes the preview: it needs the original. The files are tried on the render
+            // worker, in that order: the UI thread never looks at the disk.
+            Source::ApplePhotos { library, uuid, original } => {
+                let preview = crate::photos_browse::preview_path(library, uuid);
+                let small = max_edge <= SourceLevel::Thumb.max_edge();
+                let mut files: Vec<String> = Vec::new();
+                if small {
+                    files.extend(preview.clone());
+                }
+                files.extend(original.clone());
+                if !small && max_edge != usize::MAX {
+                    files.extend(preview);
+                }
+                let path = files.first().cloned().unwrap_or_else(|| format!("photos:{library}:{uuid}"));
+                SourceRef::File {
+                    path,
+                    max_edge,
+                    loader: self.file_loader.clone().map(|base| first_readable(base, files)),
+                    fallback: None,
+                    denoise: None,
+                    camera_profile: None,
+                    outliers: false,
+                    reduced: None,
+                }
+            }
             Source::File { path } => SourceRef::File {
                 path: path.clone(),
                 max_edge,
@@ -457,4 +474,19 @@ impl MediaCache {
             },
         }
     }
+}
+
+/// A loader that reads the first of `files` that `base` can read (the path it is handed is
+/// ignored: it names only the first of them). The error says why each one failed.
+fn first_readable(base: FileLoader, files: Vec<String>) -> FileLoader {
+    Arc::new(move |_: &str, max_edge, with| {
+        let mut why = Vec::new();
+        for file in &files {
+            match base(file, max_edge, with) {
+                Ok(read) => return Ok(read),
+                Err(e) => why.push(e),
+            }
+        }
+        Err(if why.is_empty() { "the original is only in iCloud".to_string() } else { why.join("; ") })
+    })
 }

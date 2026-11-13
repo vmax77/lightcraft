@@ -800,6 +800,8 @@ fn cell(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square
     }
     if let Some(why) = &photo.preview_only {
         paint_preview_pill(ui, p, &t, id, why, photo_rect);
+    } else if matches!(photo.source, lightcraft_catalog::Source::ApplePhotos { original: None, .. }) {
+        paint_icloud_pill(ui, p, &t, id, photo_rect);
     }
     if photo.flag == Flag::Reject {
         p.rect_filled(img_rect, 0.0, Color32::from_black_alpha(110));
@@ -937,6 +939,20 @@ fn paint_copy_tag(p: &egui::Painter, t: &Tokens, name: &str, img_rect: Rect, squ
     p.line_segment([c + vec2(s * 0.3, -s), c + vec2(s * 0.3, -s * 0.3)], Stroke::new(1.2, Color32::WHITE));
     p.line_segment([c + vec2(s * 0.3, -s * 0.3), c + vec2(s, -s * 0.3)], Stroke::new(1.2, Color32::WHITE));
     p.galley(pos2(br.left() + 22.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
+}
+
+fn paint_icloud_pill(ui: &egui::Ui, p: &egui::Painter, t: &Tokens, id: PhotoId, photo_rect: Rect) {
+    // an Apple Photos item whose original is only in iCloud: shown from Photos' small preview
+    // (always marked: the original has to be downloaded before it can be edited or exported)
+    let g = p.layout_no_wrap(crate::i18n::tr("iCloud").into(), t.semibold(9.5), Color32::WHITE);
+    let at = pos2(photo_rect.left() + 6.0, photo_rect.bottom() - 30.0 - 16.0);
+    let br = Rect::from_min_size(at, vec2(g.size().x + 26.0, 16.0));
+    p.rect_filled(br, 8.0, Color32::from_black_alpha(170));
+    paint(p, Rect::from_center_size(pos2(br.left() + 10.0, br.center().y), vec2(12.0, 12.0)), Icon::Cloud, Color32::WHITE);
+    p.galley(pos2(br.left() + 19.0, br.center().y - g.size().y / 2.0), g, Color32::WHITE);
+    register(ui, format!("badge:icloud:{}", id.0), br);
+    ui.interact(br, egui::Id::unique(("icloud-badge", id.0)), Sense::hover())
+        .on_hover_text(crate::i18n::tr("Only in iCloud: shown from Photos' preview until the original is downloaded"));
 }
 
 fn paint_preview_pill(ui: &egui::Ui, p: &egui::Painter, t: &Tokens, id: PhotoId, why: &str, photo_rect: Rect) {

@@ -77,7 +77,7 @@ pub struct PhotosItem {
     /// Capture time as the library records it (`2026-01-01T12:00:00`, local time).
     pub captured: Option<String>,
     pub file_size: u64,
-    /// The original inside the package, when it is on this Mac.
+    /// The original inside the package, unless Photos says it is only in iCloud.
     pub original: Option<String>,
 }
 
@@ -178,7 +178,10 @@ mod native {
             _ if raw => MediaKind::Raw,
             _ => MediaKind::Image,
         };
-        let original = (a.availability == Availability::Local).then(|| a.original_path.as_ref().map(|p| p.to_string_lossy().into_owned())).flatten();
+        // tried unless Photos says it is only in iCloud (a library may not say either way: a file
+        // that turns out to be missing falls back to Photos' preview when it is shown)
+        let original =
+            (a.availability != Availability::CloudOnly).then(|| a.original_path.as_ref().map(|p| p.to_string_lossy().into_owned())).flatten();
         PhotosItem {
             uuid: a.uuid.clone(),
             file_name,
@@ -191,6 +194,24 @@ mod native {
             original,
         }
     }
+}
+
+/// Photos' own small preview of an asset's unedited original, about 480 pixels long:
+/// `resources/derivatives/masters/<first character of the UUID>/<UUID>_4_5005_c.jpeg` (observed in
+/// Photos 11 libraries; a library may lack it). `None` for a UUID that can't name a file.
+pub fn preview_path(library: &str, uuid: &str) -> Option<String> {
+    let first = uuid.chars().next()?;
+    let plain = uuid.len() <= 64 && uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    plain.then(|| {
+        std::path::Path::new(library)
+            .join("resources")
+            .join("derivatives")
+            .join("masters")
+            .join(first.to_string())
+            .join(format!("{uuid}_4_5005_c.jpeg"))
+            .to_string_lossy()
+            .into_owned()
+    })
 }
 
 /// Ops applied at a time when proxies are made.

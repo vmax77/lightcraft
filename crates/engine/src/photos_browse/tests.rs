@@ -7,8 +7,10 @@ use super::*;
 use crate::apple_photos_library::fixture::{self, ALBUM, ASSET_A, ASSET_B, JUNE_2021, Layout, Library, Table, V, t};
 
 const ASSET_D: &str = "0A1B2C3D-0000-4000-8000-000000000004";
+const ASSET_E: &str = "0A1B2C3D-0000-4000-8000-000000000005";
 
-/// The fixture library (A: local favourite, B: hidden, C: in Recently Deleted) and D, an ordinary photo.
+/// The fixture library (A: local favourite, B: hidden, C: in Recently Deleted), D, an ordinary
+/// photo the library says nothing about, and E, only in iCloud.
 fn library() -> Library {
     let mut tables = fixture::photos_tables(Layout::Photos6);
     let assets: &mut Table = tables.iter_mut().find(|t| t.name == "ZASSET").unwrap();
@@ -21,6 +23,16 @@ fn library() -> Library {
         ("ZUNIFORMTYPEIDENTIFIER", t("public.jpeg")),
         ("ZWIDTH", V::Int(600)),
         ("ZHEIGHT", V::Int(400)),
+    ]);
+    assets.row(&[("Z_PK", V::Int(5)), ("ZUUID", t(ASSET_E)), ("ZFILENAME", t(&format!("{ASSET_E}.jpg"))), ("ZDIRECTORY", t("0"))]);
+    let resources: &mut Table = tables.iter_mut().find(|t| t.name == "ZINTERNALRESOURCE").unwrap();
+    resources.row(&[
+        ("Z_PK", V::Int(60)),
+        ("ZASSET", V::Int(5)),
+        ("ZRESOURCETYPE", V::Int(0)),
+        ("ZDATASTORESUBTYPE", V::Int(1)),
+        ("ZVERSION", V::Int(0)),
+        ("ZLOCALAVAILABILITY", V::Int(0)),
     ]);
     Library::new(&tables)
 }
@@ -69,9 +81,9 @@ fn photos_views_show_proxies_of_the_shown_assets() {
     let mut s = Session::new();
 
     let r = show(&mut s, &library, json!({}));
-    assert_eq!((r["photos"].as_u64(), r["new"].as_u64()), (Some(2), Some(2)), "{r}");
+    assert_eq!((r["photos"].as_u64(), r["new"].as_u64()), (Some(3), Some(3)), "{r}");
     assert_eq!(s.source, LibrarySource::ApplePhotos);
-    assert_eq!(uuids(&mut s), [ASSET_A, ASSET_D], "hidden and recently deleted assets are left out");
+    assert_eq!(uuids(&mut s), [ASSET_A, ASSET_D, ASSET_E], "hidden and recently deleted assets are left out");
 
     let a = proxy_of(&s, ASSET_A);
     assert!(a.local && !a.in_library(), "a proxy is not a library photo");
@@ -89,7 +101,12 @@ fn photos_views_show_proxies_of_the_shown_assets() {
     );
     let d = proxy_of(&s, ASSET_D);
     assert_eq!((d.file_name.as_str(), d.format.as_str()), (format!("{ASSET_D}.jpg").as_str(), "JPG"), "no original name: Photos' own");
-    assert!(matches!(d.source, Source::ApplePhotos { original: None, .. }), "the library does not say the original is here");
+    let d_original = library.root.join("originals").join("0").join(format!("{ASSET_D}.jpg"));
+    assert!(
+        matches!(&d.source, Source::ApplePhotos { original: Some(o), .. } if *o == d_original.to_string_lossy()),
+        "the library says nothing either way: the original is tried"
+    );
+    assert!(matches!(proxy_of(&s, ASSET_E).source, Source::ApplePhotos { original: None, .. }), "only in iCloud");
 
     let r = show(&mut s, &library, json!({"view": "favourites"}));
     assert_eq!(r["new"], 0, "the proxies are made once");
@@ -99,7 +116,7 @@ fn photos_views_show_proxies_of_the_shown_assets() {
     let albums = s.execute("applePhotos.albums", &json!({})).unwrap();
     assert_eq!(albums["albums"].as_array().unwrap().len(), 3, "{albums}");
     let r = show(&mut s, &library, json!({}));
-    assert_eq!((r["photos"].as_u64(), r["new"].as_u64(), r["updated"].as_u64()), (Some(2), Some(0), Some(0)));
+    assert_eq!((r["photos"].as_u64(), r["new"].as_u64(), r["updated"].as_u64()), (Some(3), Some(0), Some(0)));
 
     // the library's own views never show proxies
     s.execute("library.source", &json!({"kind": "all"})).unwrap();

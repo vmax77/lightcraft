@@ -77,6 +77,11 @@ fn the_section_lists_views_and_albums_inside_their_folders() {
     shown(&mut h);
     assert_eq!(h.app.session.source, LibrarySource::ApplePhotos);
     assert_eq!(h.app.session.visible().len(), 2, "the proxies are in the grid");
+    // (neither original is on this Mac: each cell says the photo is in iCloud)
+    let ids = h.app.session.visible().to_vec();
+    for id in ids {
+        assert!(has(&h, &format!("badge:icloud:{}", id.0)), "no iCloud badge on {id:?}");
+    }
     assert!(has(&h, "source:applePhotos:album:T") && has(&h, "source:applePhotos:folder:F"));
     assert!(!has(&h, "source:applePhotos:album:H"), "folders start folded");
     click(&mut h, "source:applePhotos:folder:F");

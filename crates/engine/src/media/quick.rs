@@ -168,7 +168,9 @@ pub fn content_key(p: &Photo) -> String {
         (Some(h), _) => h.clone(),
         (None, Source::Demo { scene }) => format!("demo:{scene}"),
         (None, Source::File { path }) => format!("file:{path}:{}", p.file_size),
-        (None, Source::ApplePhotos { library, uuid, .. }) => format!("photos:{library}:{uuid}"),
+        // whether the original is here: a render made from Photos' small preview while it was only
+        // in iCloud is not one of the original
+        (None, Source::ApplePhotos { library, uuid, original }) => format!("photos:{library}:{uuid}:{}", original.is_some()),
     }
 }
 

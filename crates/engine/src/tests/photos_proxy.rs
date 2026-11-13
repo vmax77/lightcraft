@@ -99,3 +99,57 @@ fn a_proxy_decodes_its_original_and_one_in_icloud_fails_cleanly() {
     assert!(keys[1].starts_with("photos:"), "{}", keys[1]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A PNG of `w`×`h` at `path` (its folder made), so a decoded size says which file was read.
+fn write_sized_png(path: &Path, w: usize, h: usize) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let data: Vec<[u8; 4]> = (0..w * h).map(|i| [(i % 251) as u8, 90, 160, 255]).collect();
+    let img = lightcraft_raster::Rgba8 { width: w, height: h, data };
+    let bytes = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &lightcraft_codecs::EncodeMeta::default()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Grid thumbnails come from Photos' small preview of the original, larger views from the
+/// original; with the original only in iCloud the preview stands in, except at full size (an
+/// export), which needs the original.
+#[test]
+fn thumbnails_read_photos_preview_and_larger_views_the_original() {
+    let dir = temp_dir("photos-proxy-preview");
+    let package = dir.join("Test.photoslibrary");
+    let uuid = "AB1B2C3D-0000-4000-8000-000000000005";
+    let original = package.join("originals").join("A").join(format!("{uuid}.png"));
+    write_sized_png(&original, 40, 24);
+    let preview = crate::photos_browse::preview_path(&package.to_string_lossy(), uuid).unwrap();
+    assert!(preview.ends_with(&format!("resources/derivatives/masters/A/{uuid}_4_5005_c.jpeg")), "{preview}");
+    // (a PNG under Photos' JPEG name: the decoder goes by the bytes)
+    write_sized_png(Path::new(&preview), 20, 12);
+    let mut s = Session::new().with_fs();
+    let size = |s: &mut Session, original: Option<&Path>, edge: usize| {
+        let origin = Source::ApplePhotos {
+            library: package.to_string_lossy().into(),
+            uuid: uuid.into(),
+            original: original.map(|o| o.to_string_lossy().into()),
+        };
+        s.media.origin_ref(&origin, edge).load_source().map(|src| (src.image.width, src.image.height))
+    };
+    assert_eq!(size(&mut s, Some(&original), 512).unwrap(), (20, 12), "a thumbnail: Photos' preview");
+    assert_eq!(size(&mut s, Some(&original), 2048).unwrap(), (40, 24), "a larger view: the original");
+    assert_eq!(size(&mut s, Some(&original), usize::MAX).unwrap(), (40, 24));
+    assert_eq!(size(&mut s, None, 512).unwrap(), (20, 12), "only in iCloud: the preview");
+    assert_eq!(size(&mut s, None, 2048).unwrap(), (20, 12), "…stands in for a larger view too");
+    assert!(size(&mut s, None, usize::MAX).is_err(), "but never for a full-size render");
+    std::fs::remove_file(&preview).unwrap();
+    assert_eq!(size(&mut s, Some(&original), 512).unwrap(), (40, 24), "no preview: the thumbnail is made from the original");
+    let e = size(&mut s, None, 512).unwrap_err();
+    assert!(!e.is_empty(), "nothing to read: an error, not a panic");
+
+    // a render made while only the preview was here is not one of the original
+    let photo = |original: Option<String>| {
+        Photo::new(PhotoId(1), Source::ApplePhotos { library: "L".into(), uuid: uuid.into(), original }, "a.png", "PNG", 40, 24, "2026-11-14")
+    };
+    assert_ne!(crate::media::content_key(&photo(None)), crate::media::content_key(&photo(Some("o".into()))));
+    for bad in ["", "../x", "a/b", &"A".repeat(65)] {
+        assert_eq!(crate::photos_browse::preview_path("L", bad), None, "{bad:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
