@@ -112,6 +112,7 @@ impl LightcraftApp {
             merge: merge::MergeState::default(),
             import: None,
             scan: None,
+            photos_task: None,
             scans_stopping: Default::default(),
             waiting_import: Default::default(),
             sync: None,

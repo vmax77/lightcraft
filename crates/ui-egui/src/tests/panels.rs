@@ -259,8 +259,8 @@ fn sections_drawn(h: &Headless) -> Vec<String> {
 #[test]
 fn the_sidebar_draws_its_sections_as_arranged() {
     let mut h = demo([1400.0, 1400.0], json!({"view": "photoGrid", "leftPanel": true}));
-    // (Local is not on every platform)
-    let listed = |drawn: &[String]| drawn.iter().filter(|s| s.as_str() != "local").cloned().collect::<Vec<_>>();
+    // (Local and Apple Photos are not on every platform)
+    let listed = |drawn: &[String]| drawn.iter().filter(|s| !["local", "applePhotos"].contains(&s.as_str())).cloned().collect::<Vec<_>>();
     let usual = sections_drawn(&h);
     assert_eq!(listed(&usual), ["albums", "byDate", "folders", "keywords"], "{usual:?}");
     // the demo library was imported from no folder: Folders says so in place of rows
@@ -417,7 +417,7 @@ fn a_new_album_brings_a_hidden_albums_section_back() {
 fn sidebar_commands_refuse_what_they_cannot_read() {
     let mut h = demo([1400.0, 900.0], json!({"view": "photoGrid", "leftPanel": true}));
     for (params, says) in [
-        (json!({}), "`section` is needed (albums|local|byDate|folders|keywords)"),
+        (json!({}), "`section` is needed (albums|local|byDate|folders|keywords|applePhotos)"),
         (json!({"section": 3}), "`section` is needed"),
         (json!({"section": "map"}), "unknown section `map`"),
         (json!({"section": "albums", "show": "no"}), "`show` must be true or false"),
@@ -462,6 +462,8 @@ fn header(h: &Headless, id: &str) -> egui::Rect {
 fn dragging_a_header_moves_its_section() {
     // folders too: photos imported from a folder
     let mut h = folders_app_sized(&["/pics/trip/a.jpg"], [1400.0, 1400.0]);
+    // (Apple Photos is on macOS only: taken out, so the same sections are there everywhere)
+    exec(&mut h, "view.sidebarSection", json!({"section": "applePhotos", "show": false}));
     let usual = sections_drawn(&h);
     let with_local = usual.contains(&"local".to_string());
     let listed = |ids: &[&str]| ids.iter().filter(|s| with_local || **s != "local").map(|s| s.to_string()).collect::<Vec<_>>();
@@ -572,6 +574,7 @@ fn a_section_moves_up_and_down_from_its_menu() {
     // (Local is not on every platform: taken out, so the same sections are there everywhere)
     exec(&mut h, "view.sidebarSection", json!({"section": "local", "show": false}));
     exec(&mut h, "view.sidebarSection", json!({"section": "folders", "show": false}));
+    exec(&mut h, "view.sidebarSection", json!({"section": "applePhotos", "show": false}));
     assert_eq!(sections_drawn(&h), ["albums", "byDate", "keywords"]);
     right_click(&mut h, "sidebarSection:keywords");
     click(&mut h, "sidebarMenu:moveUp");

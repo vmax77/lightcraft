@@ -16,12 +16,20 @@ pub enum SidebarSection {
     ByDate,
     Folders,
     Keywords,
+    /// An Apple Photos library's All Photos, Favourites and albums (macOS; issue #1622).
+    ApplePhotos,
 }
 
 impl SidebarSection {
     /// Every section, in the order a new library shows them.
-    pub const ALL: [SidebarSection; 5] =
-        [SidebarSection::Albums, SidebarSection::Local, SidebarSection::ByDate, SidebarSection::Folders, SidebarSection::Keywords];
+    pub const ALL: [SidebarSection; 6] = [
+        SidebarSection::Albums,
+        SidebarSection::Local,
+        SidebarSection::ByDate,
+        SidebarSection::Folders,
+        SidebarSection::Keywords,
+        SidebarSection::ApplePhotos,
+    ];
 
     /// The name commands, the saved UI state and widget ids (`sidebarSection:<id>`) use.
     pub const fn id(self) -> &'static str {
@@ -31,6 +39,7 @@ impl SidebarSection {
             SidebarSection::ByDate => "byDate",
             SidebarSection::Folders => "folders",
             SidebarSection::Keywords => "keywords",
+            SidebarSection::ApplePhotos => "applePhotos",
         }
     }
 
@@ -42,6 +51,7 @@ impl SidebarSection {
             SidebarSection::ByDate => "By Date",
             SidebarSection::Folders => "Folders",
             SidebarSection::Keywords => "Keywords",
+            SidebarSection::ApplePhotos => "Apple Photos",
         }
     }
 
@@ -53,6 +63,7 @@ impl SidebarSection {
             SidebarSection::ByDate => "No photos yet",
             SidebarSection::Folders => "No imported folders yet",
             SidebarSection::Keywords => "No keywords yet",
+            SidebarSection::ApplePhotos => "No Photos library found",
         }
     }
 
@@ -60,9 +71,14 @@ impl SidebarSection {
         Self::ALL.into_iter().find(|s| s.id() == id)
     }
 
-    /// Whether this build has the section at all (Local browses folders on disk: not on the web).
+    /// Whether this build has the section at all (Local browses folders on disk: not on the web;
+    /// Apple Photos is on macOS only).
     pub const fn available(self) -> bool {
-        !(cfg!(target_arch = "wasm32") && matches!(self, SidebarSection::Local))
+        match self {
+            SidebarSection::Local => !cfg!(target_arch = "wasm32"),
+            SidebarSection::ApplePhotos => cfg!(target_os = "macos"),
+            _ => true,
+        }
     }
 
     /// The ids of every section, for error messages (`albums|local|…`).
@@ -271,7 +287,7 @@ impl SidebarLayout {
 
 #[cfg(test)]
 mod tests {
-    use super::SidebarSection::{Albums, ByDate, Folders, Keywords, Local};
+    use super::SidebarSection::{Albums, ApplePhotos, ByDate, Folders, Keywords, Local};
     use super::*;
     use serde_json::json;
 
@@ -287,7 +303,7 @@ mod tests {
     #[test]
     fn a_new_sidebar_shows_every_section_open_in_the_usual_order() {
         let layout = SidebarLayout::default();
-        assert_eq!(order(&layout), [Albums, Local, ByDate, Folders, Keywords]);
+        assert_eq!(order(&layout), [Albums, Local, ByDate, Folders, Keywords, ApplePhotos]);
         assert!(layout.sections().iter().all(|s| !s.hidden && !s.collapsed));
         assert!(layout.is_default());
     }
@@ -318,7 +334,7 @@ mod tests {
             null,
             {"id": "albums", "hidden": "yes", "collapsed": 1}
         ]));
-        assert_eq!(order(&layout), [Keywords, Folders, Albums, Local, ByDate]);
+        assert_eq!(order(&layout), [Keywords, Folders, Albums, Local, ByDate, ApplePhotos]);
         assert!(layout.is_collapsed(Keywords) && !layout.is_hidden(Keywords), "the first entry for a section counts");
         assert!(!layout.is_hidden(Albums) && !layout.is_collapsed(Albums), "a flag that isn't true or false is off");
     }
@@ -337,6 +353,8 @@ mod tests {
     #[test]
     fn a_hidden_section_comes_back_where_and_how_it_was() {
         let mut layout = SidebarLayout::default();
+        // (shown on macOS only: hidden here so the test reads the same everywhere)
+        layout.set_hidden(ApplePhotos, true);
         layout.set_collapsed(ByDate, true);
         layout.set_hidden(ByDate, true);
         assert_eq!(layout.shown().collect::<Vec<_>>(), [Albums, Local, Folders, Keywords]);
@@ -361,14 +379,14 @@ mod tests {
     fn a_section_moves_above_another_or_to_the_end() {
         let mut layout = SidebarLayout::default();
         assert!(layout.move_before(Keywords, Some(Local)));
-        assert_eq!(order(&layout), [Albums, Keywords, Local, ByDate, Folders]);
+        assert_eq!(order(&layout), [Albums, Keywords, Local, ByDate, Folders, ApplePhotos]);
         assert!(layout.move_before(Albums, None));
-        assert_eq!(order(&layout), [Keywords, Local, ByDate, Folders, Albums]);
+        assert_eq!(order(&layout), [Keywords, Local, ByDate, Folders, ApplePhotos, Albums]);
         // nothing to do: above itself, where it already is
         assert!(!layout.move_before(Local, Some(Local)));
         assert!(!layout.move_before(Local, Some(ByDate)));
         assert!(!layout.move_before(Albums, None));
-        assert_eq!(order(&layout), [Keywords, Local, ByDate, Folders, Albums]);
+        assert_eq!(order(&layout), [Keywords, Local, ByDate, Folders, ApplePhotos, Albums]);
     }
 
     /// Given a hidden section between two shown ones, when the upper one is dropped right where
@@ -382,7 +400,7 @@ mod tests {
         assert_eq!(layout, was);
         // a hidden section can still be put elsewhere (it shows there when it is shown again)
         assert!(layout.move_before(Local, None));
-        assert_eq!(order(&layout), [Albums, ByDate, Folders, Keywords, Local]);
+        assert_eq!(order(&layout), [Albums, ByDate, Folders, Keywords, ApplePhotos, Local]);
     }
 
     /// Moving a section keeps whether it is hidden or folded.
@@ -398,6 +416,8 @@ mod tests {
     #[test]
     fn a_section_moves_one_place_among_the_shown_ones() {
         let mut layout = SidebarLayout::default();
+        // (shown on macOS only: hidden here so the test reads the same everywhere)
+        layout.set_hidden(ApplePhotos, true);
         layout.set_hidden(ByDate, true);
         // down past the hidden By Date in one step
         assert!(layout.can_move(Local, false));
@@ -426,7 +446,7 @@ mod tests {
     #[test]
     fn an_arrangement_that_is_asked_for_is_read_strictly() {
         let layout = SidebarLayout::parse(&json!(["keywords", {"id": "albums", "hidden": true, "collapsed": null}])).unwrap();
-        assert_eq!(order(&layout), [Keywords, Albums, Local, ByDate, Folders]);
+        assert_eq!(order(&layout), [Keywords, Albums, Local, ByDate, Folders, ApplePhotos]);
         assert!(layout.is_hidden(Albums) && !layout.is_collapsed(Albums));
         assert!(SidebarLayout::parse(&json!([])).unwrap().is_default());
         for (asked, says) in [
@@ -450,6 +470,6 @@ mod tests {
             assert_eq!(serde_json::to_value(s).unwrap(), json!(s.id()));
         }
         assert_eq!(SidebarSection::from_id("Albums"), None);
-        assert_eq!(SidebarSection::ids(), "albums|local|byDate|folders|keywords");
+        assert_eq!(SidebarSection::ids(), "albums|local|byDate|folders|keywords|applePhotos");
     }
 }

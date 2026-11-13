@@ -12,6 +12,7 @@ use crate::theme::Tokens;
 use crate::widgets::{icon_button, register};
 
 mod albums;
+mod apple_photos;
 mod dates;
 mod folders;
 mod keywords;
@@ -21,6 +22,7 @@ mod sections;
 
 pub use albums::{album_drag_feedback, auto_scroll_speed};
 use albums::{albums_rows, drag_auto_scroll};
+use apple_photos::{apple_photos_row_count, apple_photos_rows};
 pub(crate) use dates::browse_all_photos;
 use dates::date_rows;
 pub(crate) use folders::{created_text, folder_row_of, move_photos, moved_text};
@@ -171,6 +173,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
                     SidebarSection::Keywords => {
                         let tree = app.caches.keyword_tree(&app.session.catalog);
                         section(app, ui, s, tree.len(), |app, ui| keyword_rows(app, ui, &tree, 0.0))
+                    }
+                    SidebarSection::ApplePhotos => {
+                        let rows = apple_photos_row_count(app);
+                        section(app, ui, s, rows, apple_photos_rows)
                     }
                 };
                 placed.push(at);

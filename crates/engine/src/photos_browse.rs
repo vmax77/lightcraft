@@ -28,6 +28,20 @@ pub enum PhotosView {
     },
 }
 
+impl PhotosView {
+    /// The view `{view?: "all" | "favourites", album?: uuid}` names (All Photos by default).
+    pub fn from_params(p: &Value) -> std::result::Result<Self, String> {
+        if let Some(uuid) = p.get("album").and_then(Value::as_str) {
+            return Ok(Self::Album { uuid: uuid.to_string() });
+        }
+        match p.get("view").and_then(Value::as_str).unwrap_or("all") {
+            "all" => Ok(Self::All),
+            "favourites" | "favorites" => Ok(Self::Favourites),
+            other => Err(format!("unknown view `{other}`: give `all`, `favourites` or an `album`")),
+        }
+    }
+}
+
 /// An album or folder of the Photos library, as the sidebar lists it (parents first).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,7 +92,7 @@ pub struct PhotosRead {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{default_library, read_view};
+pub use native::{default_library, library_param, read_view};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
@@ -102,6 +116,19 @@ mod native {
     pub fn default_library(home: &Path) -> Option<PathBuf> {
         let path = PhotosLibrary::default_system_path(home);
         PhotosLibrary::at(&path).is_ok().then_some(path)
+    }
+
+    /// The library `{library?: path}` names: else the one being browsed, else the usual System
+    /// Photo Library.
+    pub fn library_param(s: &crate::Session, p: &serde_json::Value) -> Result<PathBuf, String> {
+        if let Some(path) = p.get("library").and_then(serde_json::Value::as_str) {
+            return Ok(PathBuf::from(path));
+        }
+        s.photos_browse
+            .as_ref()
+            .map(|b| PathBuf::from(&b.library))
+            .or_else(|| crate::library::home_folder().and_then(|h| default_library(&h)))
+            .ok_or_else(|| "no Photos library found: give `library`".to_string())
     }
 
     /// Read `view` of the library at `library`: its shown assets (not hidden, not in Recently

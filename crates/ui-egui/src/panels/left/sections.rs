@@ -270,7 +270,7 @@ fn header_button(section: SidebarSection) -> Option<HeaderButton> {
         SidebarSection::Keywords => {
             Some(HeaderButton { id: "keywordNew", icon: Icon::Plus, tooltip: "Create Keyword Tag", action: HeaderAction::Run(new_keyword) })
         }
-        SidebarSection::Local | SidebarSection::ByDate | SidebarSection::Folders => None,
+        SidebarSection::Local | SidebarSection::ByDate | SidebarSection::Folders | SidebarSection::ApplePhotos => None,
     }
 }
 

@@ -37,6 +37,7 @@ pub mod loupe_timing;
 pub mod menus;
 mod missing_sweep;
 pub mod panels;
+pub mod photos_view;
 pub mod pick;
 pub mod recheck;
 pub mod region;
@@ -328,6 +329,8 @@ pub struct LightcraftApp {
     pub import: Option<import::ImportTask>,
     /// A folder scan in progress (feeds the import review).
     pub scan: Option<import::ScanTask>,
+    /// An Apple Photos library being read for the sidebar (`applePhotos.show`).
+    pub photos_task: Option<photos_view::PhotosTask>,
     /// Scans stopped without waiting for their workers: each channel is kept until its worker ends, so
     /// the probes it took from the session come back.
     pub(crate) scans_stopping: import::StoppingScans,

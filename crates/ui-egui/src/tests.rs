@@ -3,6 +3,7 @@ mod album_picker;
 mod album_remove;
 mod alt_preview;
 mod appearance;
+mod apple_photos;
 mod before_after;
 mod browse_active;
 mod button;

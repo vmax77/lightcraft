@@ -1315,6 +1315,11 @@ fn ui_commands_10(app: &mut LightcraftApp, ctx: &egui::Context, id: &str, p: &Va
             app.ui.settings.keymap.clear();
             Ok(Value::Null)
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        "applePhotos.show" => {
+            // read on a worker (a large library takes a moment); the view switches when it is read
+            crate::photos_view::start(app, p)
+        }
         "library.browse" if !cfg!(target_arch = "wasm32") => {
             if crate::lightroom_import::is_running(app) {
                 return Some(Err("finish Lightroom catalog import before browsing folders".into()));
