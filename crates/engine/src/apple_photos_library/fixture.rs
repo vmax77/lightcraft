@@ -177,28 +177,43 @@ impl Pages {
         &mut self.0[id as usize - 1]
     }
 
-    /// Store a table's rows in a B-tree rooted at `root` (allocated by the caller).
+    /// Store a table's rows in a B-tree rooted at `root` (allocated by the caller), with as many
+    /// interior levels as the rows need.
     fn btree(&mut self, root: u32, mut cells: Vec<(i64, Vec<u8>)>) {
         cells.sort_by_key(|(rowid, _)| *rowid);
         let base = if root == 1 { 100 } else { 0 };
-        let groups = leaves(cells.clone(), base);
-        if groups.len() == 1 {
-            let cs: Vec<Vec<u8>> = groups[0].iter().map(|(_, c)| c.clone()).collect();
+        if base + 8 + cells.iter().map(|(_, c)| c.len() + 2).sum::<usize>() <= PAGE {
+            let cs: Vec<Vec<u8>> = cells.into_iter().map(|(_, c)| c).collect();
             write_leaf(self.get(root), base, &cs);
             return;
         }
-        let groups = leaves(cells, 0);
-        let mut children = Vec::new();
-        for group in &groups {
+        // (page, largest rowid under it) for each node of the level being built
+        let mut level = Vec::new();
+        for group in leaves(cells, 0) {
             let id = self.alloc();
-            let cs: Vec<Vec<u8>> = group.iter().map(|(_, c)| c.clone()).collect();
+            let key = group.last().map_or(0, |(r, _)| *r);
+            let cs: Vec<Vec<u8>> = group.into_iter().map(|(_, c)| c).collect();
             write_leaf(self.get(id), 0, &cs);
-            children.push((id, group.last().map_or(0, |(r, _)| *r)));
+            level.push((id, key));
         }
-        let (right, _) = children.pop().expect("at least two leaves");
-        write_interior(self.get(root), base, &children, right);
+        while level.len() > INTERIOR_FANOUT {
+            let mut parents = Vec::new();
+            for chunk in level.chunks(INTERIOR_FANOUT) {
+                let id = self.alloc();
+                let (right, key) = *chunk.last().expect("chunks are not empty");
+                write_interior(self.get(id), 0, &chunk[..chunk.len() - 1], right);
+                parents.push((id, key));
+            }
+            level = parents;
+        }
+        let (right, _) = level.pop().expect("at least two leaves");
+        write_interior(self.get(root), base, &level, right);
     }
 }
+
+/// Children per interior page: each cell is at most 4 + 9 + 2 bytes, after a 12-byte header and
+/// page 1's 100-byte file header.
+const INTERIOR_FANOUT: usize = (PAGE - 100 - 12) / 15;
 
 /// A SQLite database image holding `tables`.
 pub fn database(tables: &[Table]) -> Vec<u8> {

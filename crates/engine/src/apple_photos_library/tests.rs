@@ -5,8 +5,28 @@ fn open(library: &Library) -> Result<SqliteSource, PhotosError> {
     SqliteSource::open(&PhotosLibrary::at(&library.root)?, &AtomicBool::new(false))
 }
 
-fn open_tables(tables: &[Table]) -> Result<SqliteSource, PhotosError> {
-    open(&Library::new(tables))
+/// A source with the library it reads, which must outlive it: pages are read on demand.
+struct Opened {
+    source: SqliteSource,
+    _library: Library,
+}
+
+impl std::ops::Deref for Opened {
+    type Target = SqliteSource;
+    fn deref(&self) -> &SqliteSource {
+        &self.source
+    }
+}
+
+impl std::fmt::Debug for Opened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(f)
+    }
+}
+
+fn open_tables(tables: &[Table]) -> Result<Opened, PhotosError> {
+    let library = Library::new(tables);
+    open(&library).map(|source| Opened { source, _library: library })
 }
 
 fn asset(source: &SqliteSource, uuid: &str) -> PhotosAsset {
@@ -96,6 +116,142 @@ fn many_assets_span_several_btree_pages() {
     assert_eq!(source.asset_count(), 2003);
     assert_eq!(source.assets(1000, 500).unwrap().len(), 500);
     assert!(source.asset("B0000000-0000-4000-8000-000000002099").unwrap().is_some());
+}
+
+mod streaming {
+    use super::super::Table as Columns;
+    use super::*;
+    use crate::lightroom_sqlite::Scan;
+
+    pub fn uuid(pk: i64) -> String {
+        format!("B0000000-0000-4000-8000-{pk:012}")
+    }
+
+    /// `n` more assets (three-level B-trees), with attributes for every 7th at scattered rowids
+    /// and a caption for every 14th.
+    fn deep_tables(n: i64) -> Vec<Table> {
+        let mut tables = fixture::photos_tables(Layout::Photos6);
+        let assets = table(&mut tables, "ZASSET");
+        for pk in 100..100 + n {
+            assets.row(&[
+                ("Z_PK", V::Int(pk)),
+                ("ZUUID", t(&uuid(pk))),
+                ("ZFILENAME", t(&format!("{}.jpg", uuid(pk)))),
+                ("ZDIRECTORY", t("B")),
+                ("ZDATECREATED", V::Real(JUNE_2021 + pk as f64)),
+            ]);
+        }
+        let attributes = table(&mut tables, "ZADDITIONALASSETATTRIBUTES");
+        for pk in (100..100 + n).step_by(7) {
+            attributes.row(&[
+                ("Z_PK", V::Int(1_000_000 + pk * 977)),
+                ("ZASSET", V::Int(pk)),
+                ("ZTITLE", t(&format!("Title {pk}"))),
+                ("ZASSETDESCRIPTION", V::Int(5_000_000 + pk * 31)),
+            ]);
+        }
+        let descriptions = table(&mut tables, "ZASSETDESCRIPTION");
+        for pk in (100..100 + n).step_by(14) {
+            descriptions.row(&[("Z_PK", V::Int(5_000_000 + pk * 31)), ("ZLONGDESCRIPTION", t(&format!("Caption {pk}")))]);
+        }
+        tables
+    }
+
+    #[test]
+    fn pages_read_their_rows_from_deep_btrees() {
+        let n = 20_000;
+        let source = open_tables(&deep_tables(n)).unwrap();
+        assert_eq!(source.asset_count(), 3 + n as usize);
+        assert!(source.warnings().is_empty(), "{:?}", source.warnings());
+        for (start, limit) in [(0, 1), (2, 5), (3, 4096), (9_999, 2), (n as usize, 10)] {
+            let page = source.assets(start, limit).unwrap();
+            assert_eq!(page.len(), limit.min(source.asset_count() - start), "{start}+{limit}");
+            for a in &page {
+                assert_eq!(&asset(&source, &a.uuid), a, "a page and a lookup agree");
+            }
+        }
+        let a = asset(&source, &uuid(800));
+        assert_eq!((a.title.as_deref(), a.caption.as_deref()), (Some("Title 800"), Some("Caption 800")));
+        assert_eq!(a.created.unwrap().timestamp(), CORE_DATA_EPOCH + JUNE_2021 as i64 + 800);
+        let b = asset(&source, &uuid(107));
+        assert_eq!((b.title.as_deref(), b.caption), (Some("Title 107"), None));
+        assert_eq!(asset(&source, &uuid(101)).title, None);
+        check_small_library_assets(&source);
+    }
+
+    /// The three fixture assets are still read right among thousands of others.
+    fn check_small_library_assets(source: &SqliteSource) {
+        let a = asset(source, ASSET_A);
+        assert_eq!((a.title.as_deref(), a.keywords.len(), a.availability), (Some("Harbour at noon"), 2, Availability::Local));
+        assert!(asset(source, ASSET_C).trashed);
+    }
+
+    #[test]
+    fn scans_skip_the_rows_and_columns_not_asked_for() {
+        let library = Library::new(&deep_tables(20_000));
+        let snapshot = Snapshot::open(&library.database()).unwrap();
+        let live = snapshot.db.live_tables().unwrap();
+        let assets = Columns::new(live.iter().find(|t| t.name == "ZASSET").unwrap());
+        let keep = assets.keep(&["ZUUID"]);
+        let scan = Scan { rootpage: assets.rootpage, ncols: assets.ncols, keep: Some(&keep), from_rowid: 10_000 };
+        let mut seen = Vec::new();
+        snapshot
+            .db
+            .scan(&scan, &mut |rowid, row| {
+                seen.push((rowid, row));
+                if seen.len() == 3 { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+            })
+            .unwrap();
+        assert_eq!(seen.iter().map(|(r, _)| *r).collect::<Vec<_>>(), [10_000, 10_001, 10_002]);
+        assert_eq!(assets.text(&seen[0].1, "ZUUID"), Some(uuid(10_000)));
+        assert_eq!(assets.value(&seen[0].1, "ZFILENAME"), Some(&Value::Null), "a column not asked for is not decoded");
+        let db = &snapshot.db;
+        assert_eq!(assets.text(&db.row(&scan, 20_099).unwrap().unwrap(), "ZUUID"), Some(uuid(20_099)));
+        assert_eq!(assets.text(&db.row(&scan, 2).unwrap().unwrap(), "ZUUID").as_deref(), Some(ASSET_B));
+        for missing in [i64::MIN, 0, 50, 20_100, i64::MAX] {
+            assert_eq!(db.row(&scan, missing).unwrap(), None, "{missing}");
+        }
+        assert!(db.scan(&Scan { keep: Some(&[true]), ..scan }, &mut |_, _| ControlFlow::Continue(())).is_err(), "selection of the wrong width");
+    }
+
+    /// One table of more than a million rows. `read_table` keeps at most a million in memory, so
+    /// before reads were streamed the whole table was skipped and every asset's availability lost.
+    #[test]
+    fn tables_past_the_in_memory_limits_are_read() {
+        let mut tables = fixture::photos_tables(Layout::Photos6);
+        let resources = table(&mut tables, "ZINTERNALRESOURCE");
+        for pk in 1_000..1_000_000 + 1_000 {
+            resources.row(&[("Z_PK", V::Int(pk)), ("ZASSET", V::Int(3)), ("ZDATASTORESUBTYPE", V::Int(5))]);
+        }
+        resources.row(&[
+            ("Z_PK", V::Int(9_000_000)),
+            ("ZASSET", V::Int(3)),
+            ("ZRESOURCETYPE", V::Int(0)),
+            ("ZDATASTORESUBTYPE", V::Int(1)),
+            ("ZLOCALAVAILABILITY", V::Int(1)),
+        ]);
+        let source = open_tables(&tables).unwrap();
+        assert!(source.warnings().is_empty(), "{:?}", source.warnings());
+        assert_eq!(asset(&source, ASSET_A).availability, Availability::Local);
+        assert_eq!(asset(&source, ASSET_C).availability, Availability::Local, "from the last of 1,000,004 rows");
+    }
+
+    #[test]
+    fn a_checkpoint_after_open_is_reported_but_new_wal_frames_are_not() {
+        let tables = fixture::photos_tables(Layout::Photos6);
+        let image = fixture::database(&tables);
+        let library = Library::from_bytes(&image, None);
+        let source = open(&library).unwrap();
+        let wal = fixture::wal(&[(ASSET_PAGE, page(&image, ASSET_PAGE))], (image.len() / fixture::PAGE) as u32);
+        std::fs::write(library.database().with_extension("sqlite-wal"), wal).unwrap();
+        assert!(asset(&source, ASSET_A).favourite, "frames written after open don't change what was opened");
+        let mut bytes = image.clone();
+        bytes.extend(vec![0; fixture::PAGE]);
+        std::fs::write(library.database(), bytes).unwrap();
+        assert_eq!(source.assets(0, 10), Err(PhotosError::Changed));
+        assert_eq!(source.asset(ASSET_A), Err(PhotosError::Changed));
+        assert_eq!(open(&library).unwrap().asset_count(), 3, "opening again reads the new state");
+    }
 }
 
 /// Page 3 is `ZASSET` in [`fixture::photos_tables`] (page 1 is the schema, page 2 `Z_METADATA`).
@@ -286,7 +442,8 @@ fn unreadable_optional_tables_become_warnings() {
     let mut image = fixture::database(&tables);
     // each fixture table is one leaf page, in order after the schema page
     image[(index + 1) * fixture::PAGE] = 0x07;
-    let source = open(&Library::from_bytes(&image, None)).unwrap();
+    let library = Library::from_bytes(&image, None);
+    let source = open(&library).unwrap();
     assert_eq!(asset(&source, ASSET_A).availability, Availability::Unknown);
     assert!(source.warnings().iter().any(|w| w.contains("ZINTERNALRESOURCE")), "{:?}", source.warnings());
 
@@ -325,7 +482,7 @@ fn corrupted_bytes_never_panic() {
         }
         let library = Library::from_bytes(&bad, None);
         // any result is fine; a panic fails the test
-        let _ = open(&library).map(|s| (s.asset_count(), s.albums().map(|a| a.len())));
+        let _ = open(&library).map(|s| (s.asset_count(), s.albums().map(|a| a.len()), s.assets(0, usize::MAX), s.album_assets(ALBUM)));
     }
 }
 

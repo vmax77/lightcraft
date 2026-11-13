@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, Metadata};
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -133,11 +134,44 @@ enum TextEncoding {
     Utf16Be,
 }
 
+/// Which rows and columns [`Database::scan`] reads from one table.
+#[derive(Clone, Copy, Debug)]
+pub struct Scan<'a> {
+    pub rootpage: u32,
+    /// Columns in the table's `CREATE TABLE`.
+    pub ncols: usize,
+    /// Columns to decode, by index; the others read as NULL and are never decoded or allocated.
+    /// `None` decodes them all.
+    pub keep: Option<&'a [bool]>,
+    /// Rows with a smaller rowid are skipped, and so are subtrees that hold only such rows.
+    pub from_rowid: i64,
+}
+
+impl Scan<'_> {
+    /// Every row and column of the table at `rootpage`.
+    pub fn table(rootpage: u32, ncols: usize) -> Self {
+        Self { rootpage, ncols, keep: None, from_rowid: i64::MIN }
+    }
+}
+
+/// What one walk of a table B-tree has seen.
 struct WalkState {
     seen: HashSet<u32>,
-    out: Vec<Record>,
+    rows: usize,
     payload_total: usize,
+    /// [`Database::read_table`]'s bounds on rows and payload kept in memory.
+    bounded: bool,
+    alias: Option<usize>,
 }
+
+impl WalkState {
+    fn new(bounded: bool) -> Self {
+        Self { seen: HashSet::new(), rows: 0, payload_total: 0, bounded, alias: None }
+    }
+}
+
+/// Called with each row's rowid and values; `Break` ends the walk.
+type Visit<'v> = dyn FnMut(i64, Record) -> ControlFlow<()> + 'v;
 
 struct WalOverlay {
     page_size: usize,
@@ -242,18 +276,50 @@ impl Database {
         Ok(self.tables.clone())
     }
 
-    /// Read a table B-tree, decoding up to `ncols` values per record.
+    /// Read a table B-tree, decoding up to `ncols` values per record. Everything is kept in memory,
+    /// so the table may hold at most a million rows and 256 MB of records; [`Self::scan`] has no
+    /// such bound.
     pub fn read_table(&self, rootpage: u32, ncols: usize) -> Result<Vec<Record>, String> {
-        if !(1..=MAX_PAGE_ID).contains(&rootpage) || rootpage > self.page_count {
+        let mut out = Vec::new();
+        let mut state = WalkState::new(true);
+        self.walk(&Scan::table(rootpage, ncols), &mut state, &mut |_, record| {
+            out.push(record);
+            ControlFlow::Continue(())
+        })?;
+        Ok(out)
+    }
+
+    /// Visit a table's rows in B-tree (rowid) order without keeping them: memory is one page, one
+    /// row and the set of page numbers visited (each page at most once), whatever the size of the
+    /// rows.
+    pub fn scan(&self, scan: &Scan<'_>, visit: &mut Visit<'_>) -> Result<(), String> {
+        self.walk(scan, &mut WalkState::new(false), visit)
+    }
+
+    /// The row with `rowid`, found by descending the B-tree (a few pages, not the whole table).
+    pub fn row(&self, scan: &Scan<'_>, rowid: i64) -> Result<Option<Record>, String> {
+        let mut found = None;
+        self.scan(&Scan { from_rowid: rowid, ..*scan }, &mut |at, record| {
+            if at == rowid {
+                found = Some(record);
+            }
+            ControlFlow::Break(())
+        })?;
+        Ok(found)
+    }
+
+    fn walk(&self, scan: &Scan<'_>, state: &mut WalkState, visit: &mut Visit<'_>) -> Result<(), String> {
+        if !(1..=MAX_PAGE_ID).contains(&scan.rootpage) || scan.rootpage > self.page_count {
             return Err("table root page is outside database".into());
         }
-        if ncols > MAX_COLUMNS {
+        if scan.ncols > MAX_COLUMNS {
             return Err("table has too many columns".into());
         }
-        let alias = self.rowid_aliases.get(&rootpage).copied();
-        let mut state = WalkState { seen: HashSet::new(), out: Vec::new(), payload_total: 0 };
-        self.visit_table(rootpage, ncols, alias, 0, &mut state)?;
-        Ok(state.out)
+        if scan.keep.is_some_and(|keep| keep.len() != scan.ncols) {
+            return Err("column selection does not match the table".into());
+        }
+        state.alias = self.rowid_aliases.get(&scan.rootpage).copied();
+        self.visit_table(scan.rootpage, scan, 0, state, visit).map(|_| ())
     }
 
     fn page(&self, page_id: u32) -> Result<Cow<'_, [u8]>, String> {
@@ -272,7 +338,14 @@ impl Database {
         self.main.get(start..end).map(Cow::Borrowed).ok_or_else(|| format!("page {page_id} is truncated"))
     }
 
-    fn visit_table(&self, page_id: u32, ncols: usize, alias: Option<usize>, depth: usize, state: &mut WalkState) -> Result<(), String> {
+    fn visit_table(
+        &self,
+        page_id: u32,
+        scan: &Scan<'_>,
+        depth: usize,
+        state: &mut WalkState,
+        visit: &mut Visit<'_>,
+    ) -> Result<ControlFlow<()>, String> {
         if depth > MAX_BTREE_DEPTH {
             return Err("SQLite B-tree is too deep".into());
         }
@@ -285,7 +358,7 @@ impl Database {
         let content = page.get(..usable).ok_or("truncated usable SQLite page")?;
         let kind = *content.get(base).ok_or("truncated B-tree header")?;
         let cells = usize::from(be_u16_at(content, base + 3)?);
-        if cells > MAX_CELLS || state.out.len().saturating_add(cells) > MAX_ROWS.saturating_add(MAX_CELLS) {
+        if cells > MAX_CELLS || (state.bounded && state.rows.saturating_add(cells) > MAX_ROWS.saturating_add(MAX_CELLS)) {
             return Err("SQLite B-tree contains too many cells".into());
         }
         match kind {
@@ -308,13 +381,21 @@ impl Database {
                         return Err("SQLite record payload is too large".into());
                     }
                     let rowid = i64::from_be_bytes(read_varint(content, &mut at)?.to_be_bytes());
-                    state.payload_total = state.payload_total.checked_add(payload_len).ok_or("SQLite table payload total overflow")?;
-                    if state.payload_total > MAX_TABLE_PAYLOAD {
-                        return Err("SQLite table payload exceeds bounded import size".into());
+                    if rowid < scan.from_rowid {
+                        continue;
+                    }
+                    if state.bounded {
+                        state.payload_total = state.payload_total.checked_add(payload_len).ok_or("SQLite table payload total overflow")?;
+                        if state.payload_total > MAX_TABLE_PAYLOAD {
+                            return Err("SQLite table payload exceeds bounded import size".into());
+                        }
+                        if state.rows >= MAX_ROWS {
+                            return Err("SQLite table contains more than one million records".into());
+                        }
                     }
                     let payload = self.payload(&page, at, payload_len)?;
-                    let mut values = decode_record(&payload, ncols, self.encoding)?;
-                    if let Some(index) = alias {
+                    let mut values = decode_record(&payload, scan.ncols, scan.keep, self.encoding)?;
+                    if let Some(index) = state.alias {
                         if index >= values.len() {
                             return Err("INTEGER PRIMARY KEY column is missing from record".into());
                         }
@@ -322,12 +403,12 @@ impl Database {
                             *value = Value::Integer(rowid);
                         }
                     }
-                    if state.out.len() >= MAX_ROWS {
-                        return Err("SQLite table contains more than one million records".into());
+                    state.rows = state.rows.saturating_add(1);
+                    if visit(rowid, Record { values }).is_break() {
+                        return Ok(ControlFlow::Break(()));
                     }
-                    state.out.push(Record { values });
                 }
-                Ok(())
+                Ok(ControlFlow::Continue(()))
             }
             0x05 => {
                 let ptr_start = base.checked_add(12).ok_or("B-tree header overflow")?;
@@ -347,14 +428,20 @@ impl Database {
                         return Err("interior B-tree cell has null child".into());
                     }
                     let mut key_at = cell.checked_add(4).ok_or("interior cell overflow")?;
-                    let _ = read_varint(content, &mut key_at)?;
-                    self.visit_table(child, ncols, alias, depth + 1, state)?;
+                    // the key is the largest rowid in the child's subtree (file format §1.6)
+                    let key = i64::from_be_bytes(read_varint(content, &mut key_at)?.to_be_bytes());
+                    if key < scan.from_rowid {
+                        continue;
+                    }
+                    if self.visit_table(child, scan, depth + 1, state, visit)?.is_break() {
+                        return Ok(ControlFlow::Break(()));
+                    }
                 }
                 let right = be_u32_at(content, base + 8)?;
                 if right == 0 {
                     return Err("interior B-tree has null right child".into());
                 }
-                self.visit_table(right, ncols, alias, depth + 1, state)
+                self.visit_table(right, scan, depth + 1, state, visit)
             }
             0x02 | 0x0a => Err("SQLite index B-trees are unsupported".into()),
             other => Err(format!("unsupported SQLite B-tree page type 0x{other:02x}")),
@@ -427,9 +514,13 @@ impl Database {
     fn parse_schema(&self) -> Result<SchemaInfo, String> {
         let mut tables = Vec::new();
         let mut aliases = HashMap::new();
-        let mut state = WalkState { seen: HashSet::new(), out: Vec::new(), payload_total: 0 };
-        self.visit_table(1, 5, None, 0, &mut state)?;
-        for record in state.out {
+        let mut records = Vec::new();
+        let mut state = WalkState::new(true);
+        self.walk(&Scan::table(1, 5), &mut state, &mut |_, record| {
+            records.push(record);
+            ControlFlow::Continue(())
+        })?;
+        for record in records {
             if record.values.len() < 5 {
                 return Err("sqlite_schema row has too few columns".into());
             }
@@ -596,7 +687,7 @@ fn parse_wal(wal: &[u8], page_size: usize) -> Result<WalOverlay, String> {
     Ok(WalOverlay { page_size, frame_count, pages: overlay, page_count })
 }
 
-fn decode_record(payload: &[u8], ncols: usize, encoding: TextEncoding) -> Result<Vec<Value>, String> {
+fn decode_record(payload: &[u8], ncols: usize, keep: Option<&[bool]>, encoding: TextEncoding) -> Result<Vec<Value>, String> {
     let mut at = 0;
     let header_len = usize_from_u64(read_varint(payload, &mut at)?, "record header length")?;
     if header_len < at || header_len > payload.len() {
@@ -614,23 +705,24 @@ fn decode_record(payload: &[u8], ncols: usize, encoding: TextEncoding) -> Result
     }
     let mut body = header_len;
     let mut values = Vec::with_capacity(ncols);
-    for serial in serials {
-        let (value, size) = serial_value(payload, &mut body, serial, encoding)?;
-        values.push(value);
+    for (column, serial) in serials.into_iter().enumerate() {
+        let (kind, len) = serial_type(serial)?;
+        let end = body.checked_add(len).ok_or("SQLite record body offset overflow")?;
+        let bytes = payload.get(body..end).ok_or("SQLite record body is truncated")?;
+        let wanted = keep.is_none_or(|keep| keep.get(column).copied().unwrap_or(false));
+        values.push(if wanted { serial_value(bytes, kind, encoding)? } else { Value::Null });
         if values.len() > MAX_COLUMNS {
             return Err("SQLite record has too many columns".into());
         }
-        let _ = size;
-    }
-    if body > payload.len() {
-        return Err("SQLite record body is truncated".into());
+        body = end;
     }
     values.resize(ncols, Value::Null);
     Ok(values)
 }
 
-fn serial_value(payload: &[u8], body: &mut usize, serial: u64, encoding: TextEncoding) -> Result<(Value, usize), String> {
-    let (kind, len) = match serial {
+/// A serial type's kind and the length of its value in the record body (file format §2.1).
+fn serial_type(serial: u64) -> Result<(u64, usize), String> {
+    Ok(match serial {
         0 => (0, 0),
         1 => (1, 1),
         2 => (2, 2),
@@ -642,15 +734,15 @@ fn serial_value(payload: &[u8], body: &mut usize, serial: u64, encoding: TextEnc
         8 => (8, 0),
         9 => (9, 0),
         10 | 11 => return Err("reserved SQLite serial type".into()),
-        n if n >= 12 => {
-            let len = usize_from_u64((n - if n % 2 == 0 { 12 } else { 13 }) / 2, "SQLite field length")?;
-            (if n % 2 == 0 { 12 } else { 13 }, len)
+        n => {
+            let kind = if n % 2 == 0 { 12 } else { 13 };
+            (kind, usize_from_u64((n - kind) / 2, "SQLite field length")?)
         }
-        _ => return Err("invalid SQLite serial type".into()),
-    };
-    let end = body.checked_add(len).ok_or("SQLite record body offset overflow")?;
-    let bytes = payload.get(*body..end).ok_or("SQLite record body is truncated")?;
-    let value = match kind {
+    })
+}
+
+fn serial_value(bytes: &[u8], kind: u64, encoding: TextEncoding) -> Result<Value, String> {
+    Ok(match kind {
         0 => Value::Null,
         1 => Value::Integer(i64::from(i8::from_be_bytes([*bytes.first().ok_or("truncated integer")?]))),
         2 => Value::Integer(i64::from(i16::from_be_bytes(bytes.try_into().map_err(|_| "truncated integer")?))),
@@ -681,9 +773,7 @@ fn serial_value(payload: &[u8], body: &mut usize, serial: u64, encoding: TextEnc
         12 => Value::Blob(bytes.to_vec()),
         13 => Value::Text(decode_text(bytes, encoding)?),
         _ => return Err("invalid SQLite field type".into()),
-    };
-    *body = end;
-    Ok((value, len))
+    })
 }
 
 fn decode_text(bytes: &[u8], encoding: TextEncoding) -> Result<String, String> {

@@ -22,7 +22,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, FixedOffset, Utc};
 
-use crate::lightroom_sqlite::{Database, FileSource, LiveTable, Record, Value, committed_wal_len};
+use std::ops::ControlFlow;
+
+use crate::lightroom_sqlite::{Database, FileSource, LiveTable, Record, Scan, Value, committed_wal_len};
 
 /// File name of the System Photo Library that Photos makes in `~/Pictures`.
 pub const SYSTEM_LIBRARY_NAME: &str = "Photos Library.photoslibrary";
@@ -191,6 +193,8 @@ pub struct PhotosAlbum {
 }
 
 /// A source of Photos assets and albums. Assets come in pages, so a backend need not hold them all.
+/// Any call may answer [`PhotosError::Changed`] when the library changed since it was opened (a
+/// backend that reads pages on demand finds out then): open it again.
 pub trait PhotosSource {
     /// Number of assets, including hidden and trashed ones.
     fn asset_count(&self) -> usize;
@@ -252,26 +256,95 @@ impl PhotosLibrary {
     }
 }
 
-/// Photos library read from `Photos.sqlite`: a snapshot taken by [`SqliteSource::open`].
-#[derive(Debug)]
+/// Photos library read from `Photos.sqlite`.
+///
+/// [`SqliteSource::open`] reads each table once, row by row, and keeps only an index of the assets
+/// (UUID and where its rows are) and the small per-asset facts kept in other tables: keywords,
+/// which files are on this Mac, album members. Each page of [`PhotosSource::assets`] then reads
+/// just its own rows. Memory grows by a couple of hundred bytes per asset, never with the size of
+/// the tables, so a library of any size opens.
+///
+/// The committed WAL is read once, at `open`. When Photos later checkpoints it into the database
+/// file, the next read answers [`PhotosError::Changed`]: open the library again.
 pub struct SqliteSource {
     library: PhotosLibrary,
     schema: SchemaVersion,
-    assets: Vec<PhotosAsset>,
-    by_uuid: HashMap<String, usize>,
+    snapshot: Snapshot,
+    tables: AssetTables,
+    index: Vec<Entry>,
+    by_uuid: HashMap<Box<str>, usize>,
+    /// Keyword titles by asset `Z_PK`, sorted and without duplicates.
+    keywords: HashMap<i64, Vec<String>>,
+    resources: Resources,
+    companion_files: HashMap<String, PathBuf>,
     albums: Vec<PhotosAlbum>,
-    album_assets: HashMap<String, Vec<String>>,
+    /// Each album's assets, as positions in `index`, in album order.
+    album_assets: HashMap<String, Vec<usize>>,
     warnings: Vec<String>,
 }
 
+impl std::fmt::Debug for SqliteSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteSource")
+            .field("library", &self.library)
+            .field("schema", &self.schema)
+            .field("assets", &self.index.len())
+            .field("albums", &self.albums.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// One asset of the index: its UUID and where its rows are.
+struct Entry {
+    uuid: Box<str>,
+    pk: i64,
+    /// Rowid of its asset (`ZASSET` or `ZGENERICASSET`) row.
+    row: i64,
+    /// Rowid of its `ZADDITIONALASSETATTRIBUTES` row.
+    attributes: Option<i64>,
+    /// Rowid of the `ZASSETDESCRIPTION` row holding its caption.
+    description: Option<i64>,
+}
+
+/// The tables a page of assets is read from.
+struct AssetTables {
+    asset: Table,
+    attributes: Option<Table>,
+    descriptions: Option<Table>,
+}
+
+/// Asset columns read for each page.
+const ASSET_COLUMNS: &[&str] = &[
+    "ZUUID",
+    "ZFILENAME",
+    "ZDIRECTORY",
+    "ZKIND",
+    "ZDATECREATED",
+    "ZFAVORITE",
+    "ZHIDDEN",
+    "ZTRASHEDSTATE",
+    "ZKINDSUBTYPE",
+    "ZUNIFORMTYPEIDENTIFIER",
+    "ZWIDTH",
+    "ZHEIGHT",
+    "ZLATITUDE",
+    "ZLONGITUDE",
+];
+/// `ZADDITIONALASSETATTRIBUTES` columns read for each page.
+const ATTRIBUTE_COLUMNS: &[&str] = &["ZORIGINALFILENAME", "ZORIGINALFILESIZE", "ZTITLE", "ZTIMEZONEOFFSET"];
+/// Rows read at a time for one page of assets.
+const READ_CHUNK: usize = 2048;
+/// Rows between two looks at the cancel flag while a table is read.
+const CANCEL_CHECK_ROWS: usize = 4096;
+
 impl SqliteSource {
-    /// Read the library. `cancel` is checked between tables. Read-only: the database and its WAL
-    /// are opened for reading, and a change while reading gives [`PhotosError::Changed`].
+    /// Read the library's index. `cancel` is checked while tables are read. Read-only: the
+    /// database and its WAL are opened for reading, and a change while reading gives
+    /// [`PhotosError::Changed`].
     pub fn open(library: &PhotosLibrary, cancel: &AtomicBool) -> Result<Self, PhotosError> {
         let snapshot = Snapshot::open(&library.database_path())?;
-        let reader = TableReader { db: &snapshot.db, tables: snapshot.db.live_tables().map_err(PhotosError::Unreadable)?, cancel };
-        let source = read_library(library, &reader)?;
-        snapshot.ensure_unchanged()?;
+        let source = read_library(library, snapshot, cancel)?;
+        source.snapshot.ensure_unchanged()?;
         Ok(source)
     }
 
@@ -282,20 +355,125 @@ impl SqliteSource {
     pub fn schema(&self) -> SchemaVersion {
         self.schema
     }
+
+    /// The assets with these UUIDs, by UUID; unknown ones are left out.
+    pub(crate) fn assets_by_uuid(&self, uuids: &[String]) -> Result<HashMap<String, PhotosAsset>, PhotosError> {
+        let entries: Vec<&Entry> = uuids.iter().filter_map(|u| self.by_uuid.get(u.as_str())).filter_map(|&i| self.index.get(i)).collect();
+        Ok(self.read(&entries)?.into_iter().map(|a| (a.uuid.clone(), a)).collect())
+    }
+
+    /// The assets of `entries`, in order. A change to the database file since `open` (Photos
+    /// checkpointed its WAL) makes every row suspect, so it is checked after reading.
+    fn read(&self, entries: &[&Entry]) -> Result<Vec<PhotosAsset>, PhotosError> {
+        let mut out = Vec::with_capacity(entries.len());
+        let mut result = Ok(());
+        for chunk in entries.chunks(READ_CHUNK) {
+            match self.read_chunk(chunk) {
+                Ok(assets) => out.extend(assets),
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
+        self.snapshot.ensure_database_unchanged()?;
+        result.map(|()| out)
+    }
+
+    fn read_chunk(&self, entries: &[&Entry]) -> Result<Vec<PhotosAsset>, PhotosError> {
+        let db = &self.snapshot.db;
+        let tables = &self.tables;
+        let assets = rows_by_rowid(db, &tables.asset, ASSET_COLUMNS, entries.iter().map(|e| e.row))?;
+        let attributes = match &tables.attributes {
+            Some(t) => rows_by_rowid(db, t, ATTRIBUTE_COLUMNS, entries.iter().filter_map(|e| e.attributes))?,
+            None => HashMap::new(),
+        };
+        let descriptions = match &tables.descriptions {
+            Some(t) => rows_by_rowid(db, t, &["ZLONGDESCRIPTION"], entries.iter().filter_map(|e| e.description))?,
+            None => HashMap::new(),
+        };
+        entries
+            .iter()
+            .map(|entry| {
+                let row = assets.get(&entry.row).filter(|row| tables.asset.text(row, "ZUUID").as_deref() == Some(&*entry.uuid));
+                let Some(row) = row else {
+                    return Err(PhotosError::Unreadable(format!("{}: row {} is not where the table said it was", tables.asset.name, entry.row)));
+                };
+                let attributes = entry.attributes.and_then(|r| attributes.get(&r));
+                let description = entry.description.and_then(|r| descriptions.get(&r));
+                Ok(self.asset_from(entry, row, attributes, description))
+            })
+            .collect()
+    }
+
+    /// A companion of asset `pk` from `map` (local or not), found on disk as `<uuid>_<kind>.*`.
+    fn companion(&self, map: &HashMap<i64, bool>, pk: i64, uuid: &str, kind: i64) -> Companion {
+        if !self.resources.known {
+            return Companion::Unknown;
+        }
+        match map.get(&pk) {
+            None => Companion::None,
+            Some(false) => Companion::CloudOnly,
+            Some(true) => self.companion_files.get(&format!("{uuid}_{kind}")).map_or(Companion::Unknown, |p| Companion::Local(p.clone())),
+        }
+    }
+
+    fn asset_from(&self, entry: &Entry, row: &Record, attributes: Option<&Record>, description: Option<&Record>) -> PhotosAsset {
+        let (table, pk, uuid) = (&self.tables.asset, entry.pk, entry.uuid.to_string());
+        let attr = self.tables.attributes.as_ref().zip(attributes);
+        let attr_text = |column: &str| attr.and_then(|(t, r)| t.text(r, column));
+        let attr_int = |column: &str| attr.and_then(|(t, r)| t.int(r, column));
+        let caption = self.tables.descriptions.as_ref().zip(description).and_then(|(t, r)| t.text(r, "ZLONGDESCRIPTION"));
+        let paired_original = self.companion(&self.resources.alternate, pk, &uuid, RESOURCE_ALTERNATE);
+        let live_video = self.companion(&self.resources.live_video, pk, &uuid, RESOURCE_LIVE_VIDEO);
+        let file_name = table.text(row, "ZFILENAME");
+        let original_path =
+            table.text(row, "ZDIRECTORY").zip(file_name.as_deref()).and_then(|(dir, file)| original_path(self.library.root(), &dir, file));
+        let kind = match table.int(row, "ZKIND") {
+            Some(0) | None => AssetKind::Photo,
+            Some(1) => AssetKind::Video,
+            Some(n) => AssetKind::Other(n),
+        };
+        PhotosAsset {
+            uuid,
+            file_name,
+            original_file_name: attr_text("ZORIGINALFILENAME"),
+            original_path,
+            created: table.real(row, "ZDATECREATED").and_then(|secs| core_data_date(secs, attr_int("ZTIMEZONEOFFSET"))),
+            favourite: table.flag(row, "ZFAVORITE"),
+            hidden: table.flag(row, "ZHIDDEN"),
+            trashed: table.flag(row, "ZTRASHEDSTATE"),
+            kind,
+            live_photo: table.int(row, "ZKINDSUBTYPE") == Some(2),
+            uti: table.text(row, "ZUNIFORMTYPEIDENTIFIER"),
+            width: table.int(row, "ZWIDTH").and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0),
+            height: table.int(row, "ZHEIGHT").and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0),
+            original_size: attr_int("ZORIGINALFILESIZE").and_then(|n| u64::try_from(n).ok()),
+            location: geo_point(table.real(row, "ZLATITUDE"), table.real(row, "ZLONGITUDE")),
+            title: attr_text("ZTITLE"),
+            caption,
+            keywords: self.keywords.get(&pk).cloned().unwrap_or_default(),
+            availability: self.resources.original.get(&pk).copied().unwrap_or(Availability::Unknown),
+            paired_original,
+            live_video,
+        }
+    }
 }
 
 impl PhotosSource for SqliteSource {
     fn asset_count(&self) -> usize {
-        self.assets.len()
+        self.index.len()
     }
 
     fn assets(&self, start: usize, limit: usize) -> Result<Vec<PhotosAsset>, PhotosError> {
-        let end = start.saturating_add(limit).min(self.assets.len());
-        Ok(self.assets.get(start..end).map(<[PhotosAsset]>::to_vec).unwrap_or_default())
+        let end = start.saturating_add(limit).min(self.index.len());
+        let Some(window) = self.index.get(start..end) else { return Ok(Vec::new()) };
+        self.read(&window.iter().collect::<Vec<_>>())
     }
 
     fn asset(&self, uuid: &str) -> Result<Option<PhotosAsset>, PhotosError> {
-        Ok(self.by_uuid.get(uuid).and_then(|&i| self.assets.get(i)).cloned())
+        let Some(entry) = self.by_uuid.get(uuid).and_then(|&i| self.index.get(i)) else { return Ok(None) };
+        Ok(self.read(&[entry])?.into_iter().next())
     }
 
     fn albums(&self) -> Result<Vec<PhotosAlbum>, PhotosError> {
@@ -303,12 +481,45 @@ impl PhotosSource for SqliteSource {
     }
 
     fn album_assets(&self, album_uuid: &str) -> Result<Option<Vec<String>>, PhotosError> {
-        Ok(self.album_assets.get(album_uuid).cloned())
+        Ok(self.album_assets.get(album_uuid).map(|members| members.iter().filter_map(|&i| self.index.get(i)).map(|e| e.uuid.to_string()).collect()))
     }
 
     fn warnings(&self) -> &[String] {
         &self.warnings
     }
+}
+
+/// Rows of `table` by rowid, with only `columns` decoded. Rowids close together are read in one
+/// walk over the leaves between them; scattered ones with one descent each.
+fn rows_by_rowid(db: &Database, table: &Table, columns: &[&str], rowids: impl Iterator<Item = i64>) -> Result<HashMap<i64, Record>, PhotosError> {
+    let mut wanted: Vec<i64> = rowids.collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let (Some(&first), Some(&last)) = (wanted.first(), wanted.last()) else { return Ok(HashMap::new()) };
+    let keep = table.keep(columns);
+    let scan = Scan { rootpage: table.rootpage, ncols: table.ncols, keep: Some(&keep), from_rowid: first };
+    let unreadable = |e: String| PhotosError::Unreadable(format!("{}: {e}", table.name));
+    let mut out = HashMap::with_capacity(wanted.len());
+    let span = u64::try_from(i128::from(last) - i128::from(first)).unwrap_or(u64::MAX);
+    if span <= (wanted.len() as u64).saturating_mul(4).saturating_add(256) {
+        let mut set: HashSet<i64> = wanted.iter().copied().collect();
+        db.scan(&scan, &mut |rowid, record| {
+            if set.remove(&rowid) {
+                out.insert(rowid, record);
+            }
+            if rowid >= last || set.is_empty() { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        })
+        .map_err(unreadable)?;
+    }
+    // what the walk did not reach (a damaged tree whose rows are out of order) is looked up alone
+    for rowid in wanted {
+        if !out.contains_key(&rowid)
+            && let Some(record) = db.row(&scan, rowid).map_err(unreadable)?
+        {
+            out.insert(rowid, record);
+        }
+    }
+    Ok(out)
 }
 
 /// The database and committed WAL, with what they looked like when opened.
@@ -360,10 +571,20 @@ impl Snapshot {
         Ok(snapshot)
     }
 
+    /// Neither the database nor its WAL changed since `open`.
     fn ensure_unchanged(&self) -> Result<(), PhotosError> {
-        let database_now = FileStamp::of(&self.database).map_err(|_| PhotosError::Changed)?;
         let wal_now = optional_stamp(&self.wal).map_err(|_| PhotosError::Changed)?;
-        if database_now != self.database_before || wal_now != self.wal_before || self.db.ensure_unchanged().is_err() {
+        if wal_now != self.wal_before {
+            return Err(PhotosError::Changed);
+        }
+        self.ensure_database_unchanged()
+    }
+
+    /// The database file did not change since `open`. The WAL frames were copied at `open`, so
+    /// new frames don't matter; a checkpoint writes the database file, and that does.
+    fn ensure_database_unchanged(&self) -> Result<(), PhotosError> {
+        let database_now = FileStamp::of(&self.database).map_err(|_| PhotosError::Changed)?;
+        if database_now != self.database_before || self.db.ensure_unchanged().is_err() {
             return Err(PhotosError::Changed);
         }
         Ok(())
@@ -378,15 +599,34 @@ fn optional_stamp(path: &Path) -> Result<Option<FileStamp>, PhotosError> {
     }
 }
 
-/// Rows of one table with their column names.
+/// A table's place in the database and its column names.
 struct Table {
+    name: String,
+    rootpage: u32,
+    ncols: usize,
     columns: HashMap<String, usize>,
-    rows: Vec<Record>,
 }
 
 impl Table {
+    fn new(live: &LiveTable) -> Self {
+        let names = live.column_names.as_deref().unwrap_or_default();
+        let columns = names.iter().enumerate().map(|(i, name)| (name.to_ascii_uppercase(), i)).collect();
+        Self { name: live.name.clone(), rootpage: live.rootpage, ncols: names.len(), columns }
+    }
+
     fn has(&self, column: &str) -> bool {
         self.columns.contains_key(column)
+    }
+
+    /// Which columns to decode: `names`, where the table has them.
+    fn keep(&self, names: &[&str]) -> Vec<bool> {
+        let mut keep = vec![false; self.ncols];
+        for name in names {
+            if let Some(slot) = self.columns.get(*name).and_then(|&i| keep.get_mut(i)) {
+                *slot = true;
+            }
+        }
+        keep
     }
 
     fn value<'a>(&self, row: &'a Record, column: &str) -> Option<&'a Value> {
@@ -428,46 +668,60 @@ struct TableReader<'a> {
 }
 
 impl TableReader<'_> {
-    fn find(&self, name: &str) -> Option<&LiveTable> {
-        self.tables.iter().find(|t| t.name.eq_ignore_ascii_case(name))
+    fn find(&self, name: &str) -> Option<Table> {
+        self.tables.iter().find(|t| t.name.eq_ignore_ascii_case(name)).map(Table::new)
     }
 
-    fn read(&self, table: &LiveTable) -> Result<Table, PhotosError> {
+    /// Visit every row of `table` with only `columns` decoded, looking at the cancel flag as it goes.
+    fn scan(&self, table: &Table, columns: &[&str], mut visit: impl FnMut(i64, &Record)) -> Result<(), PhotosError> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(PhotosError::Cancelled);
         }
-        let names = table.column_names.as_deref().unwrap_or_default();
-        let columns = names.iter().enumerate().map(|(i, name)| (name.to_ascii_uppercase(), i)).collect();
-        let rows = self.db.read_table(table.rootpage, names.len()).map_err(|e| PhotosError::Unreadable(format!("{}: {e}", table.name)))?;
-        Ok(Table { columns, rows })
+        let keep = table.keep(columns);
+        let scan = Scan { rootpage: table.rootpage, ncols: table.ncols, keep: Some(&keep), from_rowid: i64::MIN };
+        let (mut rows, mut cancelled) = (0usize, false);
+        self.db
+            .scan(&scan, &mut |rowid, record| {
+                rows = rows.wrapping_add(1);
+                if rows.is_multiple_of(CANCEL_CHECK_ROWS) && self.cancel.load(Ordering::Relaxed) {
+                    cancelled = true;
+                    return ControlFlow::Break(());
+                }
+                visit(rowid, &record);
+                ControlFlow::Continue(())
+            })
+            .map_err(|e| PhotosError::Unreadable(format!("{}: {e}", table.name)))?;
+        if cancelled { Err(PhotosError::Cancelled) } else { Ok(()) }
     }
 
-    /// A table that may be missing or unreadable: either leaves a warning and no rows.
-    fn optional(&self, name: &str, warnings: &mut Vec<String>) -> Result<Option<Table>, PhotosError> {
-        let Some(table) = self.find(name) else { return Ok(None) };
-        self.optional_table(table, warnings)
-    }
-
-    fn optional_table(&self, table: &LiveTable, warnings: &mut Vec<String>) -> Result<Option<Table>, PhotosError> {
-        match self.read(table) {
-            Ok(rows) => Ok(Some(rows)),
+    /// [`Self::scan`] of a table that may be unreadable: that leaves a warning and gives `false`,
+    /// and the caller drops what it collected.
+    fn optional_scan(
+        &self,
+        table: &Table,
+        columns: &[&str],
+        warnings: &mut Vec<String>,
+        visit: impl FnMut(i64, &Record),
+    ) -> Result<bool, PhotosError> {
+        match self.scan(table, columns, visit) {
+            Ok(()) => Ok(true),
             Err(PhotosError::Unreadable(e)) => {
                 warnings.push(format!("skipped {e}"));
-                Ok(None)
+                Ok(false)
             }
             Err(e) => Err(e),
         }
     }
 
     /// A Core Data many-to-many table: name `Z_<n><SUFFIX>`, with columns ending `left` and `right`.
-    fn join(&self, suffix: &str, left: &str, right: &str) -> Option<(&LiveTable, String, String, Option<String>)> {
+    fn join(&self, suffix: &str, left: &str, right: &str) -> Option<(Table, String, String, Option<String>)> {
         self.tables.iter().filter(|t| join_table_name(&t.name, suffix)).find_map(|t| {
             let names = t.column_names.as_deref()?;
             let upper: Vec<String> = names.iter().map(|n| n.to_ascii_uppercase()).collect();
             let l = upper.iter().find(|c| c.starts_with("Z_") && !c.starts_with("Z_FOK_") && c.ends_with(left))?.clone();
             let r = upper.iter().find(|c| c.starts_with("Z_") && !c.starts_with("Z_FOK_") && c.ends_with(right) && **c != l)?.clone();
             let order = upper.iter().find(|c| c.starts_with("Z_FOK_") && c.ends_with(right)).cloned();
-            Some((t, l, r, order))
+            Some((Table::new(t), l, r, order))
         })
     }
 }
@@ -479,7 +733,19 @@ fn join_table_name(name: &str, suffix: &str) -> bool {
     !middle.is_empty() && middle.bytes().all(|b| b.is_ascii_digit())
 }
 
-fn read_library(library: &PhotosLibrary, reader: &TableReader<'_>) -> Result<SqliteSource, PhotosError> {
+/// The asset index and what [`read_library`] learnt while building it.
+struct AssetIndex {
+    index: Vec<Entry>,
+    by_uuid: HashMap<Box<str>, usize>,
+    by_pk: HashMap<i64, usize>,
+    /// Asset `Z_PK` of each `ZADDITIONALASSETATTRIBUTES` `Z_PK`, from the asset rows.
+    asset_of_attributes: HashMap<i64, i64>,
+    /// `originals/<dir>` folders of assets whose companions are on this Mac.
+    companion_dirs: HashSet<String>,
+}
+
+fn read_library(library: &PhotosLibrary, snapshot: Snapshot, cancel: &AtomicBool) -> Result<SqliteSource, PhotosError> {
+    let reader = TableReader { db: &snapshot.db, tables: snapshot.db.live_tables().map_err(PhotosError::Unreadable)?, cancel };
     let (schema, asset_table) = if let Some(t) = reader.find("ZASSET") {
         (SchemaVersion::Photos6OrLater, t)
     } else if let Some(t) = reader.find("ZGENERICASSET") {
@@ -487,138 +753,167 @@ fn read_library(library: &PhotosLibrary, reader: &TableReader<'_>) -> Result<Sql
     } else {
         return Err(PhotosError::UnsupportedVersion("no ZASSET or ZGENERICASSET table; libraries from before Photos 5 are not supported".into()));
     };
-    let mut warnings = Vec::new();
-    let table = reader.read(asset_table)?;
-    if !table.has("Z_PK") || !table.has("ZUUID") {
+    if !asset_table.has("Z_PK") || !asset_table.has("ZUUID") {
         return Err(PhotosError::UnsupportedVersion(format!("{} has no Z_PK or ZUUID column", asset_table.name)));
     }
-    let attributes = reader.optional("ZADDITIONALASSETATTRIBUTES", &mut warnings)?;
-    let descriptions = reader.optional("ZASSETDESCRIPTION", &mut warnings)?;
-    let keywords = read_keywords(reader, attributes.as_ref(), &table, &mut warnings)?;
-    let resources = read_resources(reader, &mut warnings)?;
-    let companion_files = companion_files(library, &table, &resources, &mut warnings);
-    let lookups = Lookups { library, extra: Extras::new(attributes.as_ref(), descriptions.as_ref()), keywords, resources, companion_files };
+    let mut warnings = Vec::new();
+    let resources = read_resources(&reader, &mut warnings)?;
+    let descriptions = read_descriptions(&reader, &mut warnings)?;
+    let attributes = read_attributes(&reader, descriptions.as_ref(), &mut warnings)?;
+    let mut assets = read_asset_index(library, &reader, &asset_table, attributes.as_ref(), &resources, &mut warnings)?;
+    if let Some(attributes) = &attributes {
+        assets.asset_of_attributes.extend(attributes.asset_of.iter().map(|(&attr, &asset)| (attr, asset)));
+    }
+    let keywords = read_keywords(&reader, &assets.asset_of_attributes, &mut warnings)?;
+    let companion_files = companion_files(library, &assets.companion_dirs, &mut warnings);
+    let (albums, album_pks) = read_albums(&reader, &mut warnings)?;
+    let album_assets = read_album_assets(&reader, &album_pks, &assets.by_pk, &mut warnings)?;
+    let tables = AssetTables { asset: asset_table, attributes: attributes.map(|a| a.table), descriptions: descriptions.map(|d| d.table) };
+    drop(reader);
+    Ok(SqliteSource {
+        library: library.clone(),
+        schema,
+        snapshot,
+        tables,
+        index: assets.index,
+        by_uuid: assets.by_uuid,
+        keywords,
+        resources,
+        companion_files,
+        albums,
+        album_assets,
+        warnings,
+    })
+}
 
-    let mut assets = Vec::new();
-    let mut by_uuid = HashMap::new();
-    let mut by_pk = HashMap::new();
+fn read_asset_index(
+    library: &PhotosLibrary,
+    reader: &TableReader<'_>,
+    table: &Table,
+    attributes: Option<&Attributes>,
+    resources: &Resources,
+    warnings: &mut Vec<String>,
+) -> Result<AssetIndex, PhotosError> {
+    let mut out = AssetIndex {
+        index: Vec::new(),
+        by_uuid: HashMap::new(),
+        by_pk: HashMap::new(),
+        asset_of_attributes: HashMap::new(),
+        companion_dirs: HashSet::new(),
+    };
+    let wants_companions = |pk: i64| resources.alternate.get(&pk) == Some(&true) || resources.live_video.get(&pk) == Some(&true);
     let mut skipped = 0usize;
-    for row in &table.rows {
+    reader.scan(table, &["Z_PK", "ZUUID", "ZADDITIONALATTRIBUTES", "ZDIRECTORY"], |rowid, row| {
+        if let (Some(asset), Some(attr)) = (table.int(row, "Z_PK"), table.int(row, "ZADDITIONALATTRIBUTES")) {
+            out.asset_of_attributes.insert(attr, asset);
+        }
         let (Some(pk), Some(uuid)) = (table.int(row, "Z_PK"), table.text(row, "ZUUID").filter(|u| valid_uuid(u))) else {
             skipped += 1;
-            continue;
+            return;
         };
-        if by_uuid.contains_key(&uuid) {
+        if out.by_uuid.contains_key(uuid.as_str()) {
             skipped += 1;
-            continue;
+            return;
         }
-        let asset = lookups.asset(&table, row, pk, uuid);
-        by_uuid.insert(asset.uuid.clone(), assets.len());
-        by_pk.insert(pk, asset.uuid.clone());
-        assets.push(asset);
-    }
+        if wants_companions(pk)
+            && let Some(dir) = table.text(row, "ZDIRECTORY").filter(|d| original_path(library.root(), d, "x").is_some())
+        {
+            out.companion_dirs.insert(dir);
+        }
+        let rows = attributes.and_then(|a| a.by_asset.get(&pk));
+        let uuid: Box<str> = uuid.into();
+        out.by_uuid.insert(uuid.clone(), out.index.len());
+        out.by_pk.entry(pk).or_insert(out.index.len());
+        out.index.push(Entry { uuid, pk, row: rowid, attributes: rows.map(|r| r.0), description: rows.and_then(|r| r.1) });
+    })?;
     if skipped > 0 {
         warnings.push(format!("skipped {skipped} assets without a valid, unique UUID"));
     }
-    let (albums, album_pks) = read_albums(reader, &mut warnings)?;
-    let album_assets = read_album_assets(reader, &album_pks, &by_pk, &mut warnings)?;
-    Ok(SqliteSource { library: library.clone(), schema, assets, by_uuid, albums, album_assets, warnings })
+    Ok(out)
 }
 
-/// Per-asset values kept in other tables, keyed by asset `Z_PK`.
-struct Extras {
-    original_name: HashMap<i64, String>,
-    size: HashMap<i64, u64>,
-    title: HashMap<i64, String>,
-    caption: HashMap<i64, String>,
-    timezone: HashMap<i64, i64>,
+/// `ZASSETDESCRIPTION` rows that hold a caption, by their `Z_PK` and by the `Z_PK` of the
+/// `ZADDITIONALASSETATTRIBUTES` row they belong to.
+struct Descriptions {
+    table: Table,
+    by_pk: HashMap<i64, i64>,
+    by_attributes: HashMap<i64, i64>,
 }
 
-impl Extras {
-    fn new(attributes: Option<&Table>, descriptions: Option<&Table>) -> Self {
-        let mut out =
-            Self { original_name: HashMap::new(), size: HashMap::new(), title: HashMap::new(), caption: HashMap::new(), timezone: HashMap::new() };
-        let Some(attrs) = attributes else { return out };
-        let captions = captions(descriptions);
-        for row in &attrs.rows {
-            let Some(asset) = attrs.int(row, "ZASSET") else { continue };
-            if let Some(name) = attrs.text(row, "ZORIGINALFILENAME") {
-                out.original_name.insert(asset, name);
-            }
-            if let Some(size) = attrs.int(row, "ZORIGINALFILESIZE").and_then(|n| u64::try_from(n).ok()) {
-                out.size.insert(asset, size);
-            }
-            if let Some(title) = attrs.text(row, "ZTITLE") {
-                out.title.insert(asset, title);
-            }
-            if let Some(offset) = attrs.int(row, "ZTIMEZONEOFFSET") {
-                out.timezone.insert(asset, offset);
-            }
-            let attr_pk = attrs.int(row, "Z_PK");
-            let caption = attrs
-                .int(row, "ZASSETDESCRIPTION")
-                .and_then(|d| captions.by_description.get(&d))
-                .or_else(|| attr_pk.and_then(|p| captions.by_attributes.get(&p)));
-            if let Some(caption) = caption {
-                out.caption.insert(asset, caption.clone());
-            }
+fn read_descriptions(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Result<Option<Descriptions>, PhotosError> {
+    let Some(table) = reader.find("ZASSETDESCRIPTION") else { return Ok(None) };
+    let (mut by_pk, mut by_attributes) = (HashMap::new(), HashMap::new());
+    let read = reader.optional_scan(&table, &["Z_PK", "ZASSETATTRIBUTES", "ZLONGDESCRIPTION"], warnings, |rowid, row| {
+        if table.text(row, "ZLONGDESCRIPTION").is_none() {
+            return;
         }
-        out
-    }
-}
-
-struct Captions {
-    by_description: HashMap<i64, String>,
-    by_attributes: HashMap<i64, String>,
-}
-
-fn captions(descriptions: Option<&Table>) -> Captions {
-    let mut out = Captions { by_description: HashMap::new(), by_attributes: HashMap::new() };
-    let Some(table) = descriptions else { return out };
-    for row in &table.rows {
-        let Some(text) = table.text(row, "ZLONGDESCRIPTION") else { continue };
         if let Some(pk) = table.int(row, "Z_PK") {
-            out.by_description.insert(pk, text.clone());
+            by_pk.insert(pk, rowid);
         }
         if let Some(attr) = table.int(row, "ZASSETATTRIBUTES") {
-            out.by_attributes.insert(attr, text);
+            by_attributes.insert(attr, rowid);
         }
-    }
-    out
+    })?;
+    Ok(read.then_some(Descriptions { table, by_pk, by_attributes }))
+}
+
+/// `ZADDITIONALASSETATTRIBUTES` rows by asset `Z_PK`: the row's rowid and the rowid of the
+/// `ZASSETDESCRIPTION` row with its caption.
+struct Attributes {
+    table: Table,
+    by_asset: HashMap<i64, (i64, Option<i64>)>,
+    /// Asset `Z_PK` of each attributes `Z_PK`.
+    asset_of: HashMap<i64, i64>,
+}
+
+fn read_attributes(
+    reader: &TableReader<'_>,
+    descriptions: Option<&Descriptions>,
+    warnings: &mut Vec<String>,
+) -> Result<Option<Attributes>, PhotosError> {
+    let Some(table) = reader.find("ZADDITIONALASSETATTRIBUTES") else { return Ok(None) };
+    let (mut by_asset, mut asset_of) = (HashMap::new(), HashMap::new());
+    let read = reader.optional_scan(&table, &["Z_PK", "ZASSET", "ZASSETDESCRIPTION"], warnings, |rowid, row| {
+        let Some(asset) = table.int(row, "ZASSET") else { return };
+        let pk = table.int(row, "Z_PK");
+        let description = descriptions.and_then(|d| {
+            table.int(row, "ZASSETDESCRIPTION").and_then(|p| d.by_pk.get(&p)).or_else(|| pk.and_then(|p| d.by_attributes.get(&p))).copied()
+        });
+        by_asset.insert(asset, (rowid, description));
+        if let Some(pk) = pk {
+            asset_of.insert(pk, asset);
+        }
+    })?;
+    Ok(read.then_some(Attributes { table, by_asset, asset_of }))
 }
 
 /// Keyword titles by asset `Z_PK`, sorted and without duplicates.
 fn read_keywords(
     reader: &TableReader<'_>,
-    attributes: Option<&Table>,
-    assets: &Table,
+    asset_of_attributes: &HashMap<i64, i64>,
     warnings: &mut Vec<String>,
 ) -> Result<HashMap<i64, Vec<String>>, PhotosError> {
+    let Some(keyword_table) = reader.find("ZKEYWORD") else { return Ok(HashMap::new()) };
+    let mut titles: HashMap<i64, String> = HashMap::new();
+    let read = reader.optional_scan(&keyword_table, &["Z_PK", "ZTITLE"], warnings, |_, row| {
+        if let (Some(pk), Some(title)) = (keyword_table.int(row, "Z_PK"), keyword_table.text(row, "ZTITLE")) {
+            titles.insert(pk, title);
+        }
+    })?;
+    let Some((links, attr_col, keyword_col, _)) = reader.join("KEYWORDS", "ASSETATTRIBUTES", "KEYWORDS") else { return Ok(HashMap::new()) };
+    if !read {
+        return Ok(HashMap::new());
+    }
     let mut out: HashMap<i64, Vec<String>> = HashMap::new();
-    let Some(keyword_table) = reader.optional("ZKEYWORD", warnings)? else { return Ok(out) };
-    let Some((join, attr_col, keyword_col, _)) = reader.join("KEYWORDS", "ASSETATTRIBUTES", "KEYWORDS") else { return Ok(out) };
-    let Some(links) = reader.optional_table(join, warnings)? else { return Ok(out) };
-    let titles: HashMap<i64, String> =
-        keyword_table.rows.iter().filter_map(|r| Some((keyword_table.int(r, "Z_PK")?, keyword_table.text(r, "ZTITLE")?))).collect();
-    let mut asset_of_attributes: HashMap<i64, i64> = HashMap::new();
-    for row in &assets.rows {
-        if let (Some(asset), Some(attr)) = (assets.int(row, "Z_PK"), assets.int(row, "ZADDITIONALATTRIBUTES")) {
-            asset_of_attributes.insert(attr, asset);
-        }
-    }
-    if let Some(attrs) = attributes {
-        for row in &attrs.rows {
-            if let (Some(attr), Some(asset)) = (attrs.int(row, "Z_PK"), attrs.int(row, "ZASSET")) {
-                asset_of_attributes.insert(attr, asset);
-            }
-        }
-    }
-    for row in &links.rows {
+    let read = reader.optional_scan(&links, &[&attr_col, &keyword_col], warnings, |_, row| {
         let asset = links.int(row, &attr_col).and_then(|a| asset_of_attributes.get(&a));
         let title = links.int(row, &keyword_col).and_then(|k| titles.get(&k));
         if let (Some(&asset), Some(title)) = (asset, title) {
             out.entry(asset).or_default().push(title.clone());
         }
+    })?;
+    if !read {
+        return Ok(HashMap::new());
     }
     for list in out.values_mut() {
         list.sort();
@@ -646,13 +941,13 @@ fn note(map: &mut HashMap<i64, bool>, asset: i64, local: bool) {
 
 fn read_resources(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Result<Resources, PhotosError> {
     let mut out = Resources::default();
-    let Some(table) = reader.optional("ZINTERNALRESOURCE", warnings)? else { return Ok(out) };
+    let Some(table) = reader.find("ZINTERNALRESOURCE") else { return Ok(out) };
     if !table.has("ZASSET") || !table.has("ZLOCALAVAILABILITY") {
         return Ok(out);
     }
-    out.known = table.has("ZRESOURCETYPE");
-    for row in &table.rows {
-        let Some(asset) = table.int(row, "ZASSET") else { continue };
+    let columns = ["ZASSET", "ZVERSION", "ZLOCALAVAILABILITY", "ZRESOURCETYPE", "ZDATASTORESUBTYPE", "ZRECIPEID"];
+    let read = reader.optional_scan(&table, &columns, warnings, |_, row| {
+        let Some(asset) = table.int(row, "ZASSET") else { return };
         let current = table.int(row, "ZVERSION").is_none_or(|n| n == 0);
         let local = table.int(row, "ZLOCALAVAILABILITY") == Some(1);
         let kind = table.int(row, "ZRESOURCETYPE");
@@ -662,39 +957,34 @@ fn read_resources(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Resul
             if here == Availability::Local {
                 *entry = Availability::Local;
             }
-            continue;
+            return;
         }
         // companions of the original, not of an edit (an edit has a recipe)
         if !current || table.int(row, "ZRECIPEID").is_some_and(|n| n != 0) {
-            continue;
+            return;
         }
         match kind {
             Some(RESOURCE_ALTERNATE) => note(&mut out.alternate, asset, local),
             Some(RESOURCE_LIVE_VIDEO) => note(&mut out.live_video, asset, local),
             _ => {}
         }
+    })?;
+    if !read {
+        return Ok(Resources::default());
     }
+    out.known = table.has("ZRESOURCETYPE");
     Ok(out)
 }
 
 /// Companion files on disk, by `<UUID>_<resource type>`, from the `originals/<dir>` folders of
 /// assets whose companions the library says are local. Only regular files named exactly
 /// `<UUID>_<3 or 4>.<ext>` are taken; links, folders and anything else are ignored.
-fn companion_files(library: &PhotosLibrary, assets: &Table, resources: &Resources, warnings: &mut Vec<String>) -> HashMap<String, PathBuf> {
-    let wanted = |pk: i64| resources.alternate.get(&pk) == Some(&true) || resources.live_video.get(&pk) == Some(&true);
-    let mut dirs = HashSet::new();
-    for row in &assets.rows {
-        if assets.int(row, "Z_PK").is_some_and(wanted)
-            && let Some(dir) = assets.text(row, "ZDIRECTORY").filter(|d| original_path(library.root(), d, "x").is_some())
-        {
-            dirs.insert(dir);
-        }
-    }
+fn companion_files(library: &PhotosLibrary, dirs: &HashSet<String>, warnings: &mut Vec<String>) -> HashMap<String, PathBuf> {
     let mut out = HashMap::new();
-    let mut sorted: Vec<String> = dirs.into_iter().collect();
+    let mut sorted: Vec<&String> = dirs.iter().collect();
     sorted.sort();
     for dir in sorted {
-        let folder = library.root().join("originals").join(&dir);
+        let folder = library.root().join("originals").join(dir);
         let entries = match std::fs::read_dir(&folder) {
             Ok(entries) => entries,
             Err(e) => {
@@ -722,66 +1012,6 @@ fn companion_stem(name: &str) -> Option<&str> {
     let kind_ok = kind.parse::<i64>().is_ok_and(|k| k == RESOURCE_ALTERNATE || k == RESOURCE_LIVE_VIDEO);
     let ext_ok = !ext.is_empty() && ext.bytes().all(|b| b.is_ascii_alphanumeric());
     (kind_ok && ext_ok && valid_uuid(uuid)).then_some(stem)
-}
-
-/// What [`Lookups::asset`] needs besides the asset row.
-struct Lookups<'a> {
-    library: &'a PhotosLibrary,
-    extra: Extras,
-    keywords: HashMap<i64, Vec<String>>,
-    resources: Resources,
-    companion_files: HashMap<String, PathBuf>,
-}
-
-impl Lookups<'_> {
-    /// A companion of asset `pk` from `map` (local or not), found on disk as `<uuid>_<kind>.*`.
-    fn companion(&self, map: &HashMap<i64, bool>, pk: i64, uuid: &str, kind: i64) -> Companion {
-        if !self.resources.known {
-            return Companion::Unknown;
-        }
-        match map.get(&pk) {
-            None => Companion::None,
-            Some(false) => Companion::CloudOnly,
-            Some(true) => self.companion_files.get(&format!("{uuid}_{kind}")).map_or(Companion::Unknown, |p| Companion::Local(p.clone())),
-        }
-    }
-
-    fn asset(&self, table: &Table, row: &Record, pk: i64, uuid: String) -> PhotosAsset {
-        let (library, extra, keywords) = (self.library, &self.extra, &self.keywords);
-        let paired_original = self.companion(&self.resources.alternate, pk, &uuid, RESOURCE_ALTERNATE);
-        let live_video = self.companion(&self.resources.live_video, pk, &uuid, RESOURCE_LIVE_VIDEO);
-        let file_name = table.text(row, "ZFILENAME");
-        let original_path = table.text(row, "ZDIRECTORY").zip(file_name.as_deref()).and_then(|(dir, file)| original_path(library.root(), &dir, file));
-        let kind = match table.int(row, "ZKIND") {
-            Some(0) | None => AssetKind::Photo,
-            Some(1) => AssetKind::Video,
-            Some(n) => AssetKind::Other(n),
-        };
-        let offset = extra.timezone.get(&pk).copied();
-        PhotosAsset {
-            uuid,
-            file_name,
-            original_file_name: extra.original_name.get(&pk).cloned(),
-            original_path,
-            created: table.real(row, "ZDATECREATED").and_then(|secs| core_data_date(secs, offset)),
-            favourite: table.flag(row, "ZFAVORITE"),
-            hidden: table.flag(row, "ZHIDDEN"),
-            trashed: table.flag(row, "ZTRASHEDSTATE"),
-            kind,
-            live_photo: table.int(row, "ZKINDSUBTYPE") == Some(2),
-            uti: table.text(row, "ZUNIFORMTYPEIDENTIFIER"),
-            width: table.int(row, "ZWIDTH").and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0),
-            height: table.int(row, "ZHEIGHT").and_then(|n| u32::try_from(n).ok()).filter(|&n| n > 0),
-            original_size: extra.size.get(&pk).copied(),
-            location: geo_point(table.real(row, "ZLATITUDE"), table.real(row, "ZLONGITUDE")),
-            title: extra.title.get(&pk).cloned(),
-            caption: extra.caption.get(&pk).cloned(),
-            keywords: keywords.get(&pk).cloned().unwrap_or_default(),
-            availability: self.resources.original.get(&pk).copied().unwrap_or(Availability::Unknown),
-            paired_original,
-            live_video,
-        }
-    }
 }
 
 /// UUIDs become map keys and later file names: ASCII letters, digits and `-` only.
@@ -820,7 +1050,8 @@ fn geo_point(latitude: Option<f64>, longitude: Option<f64>) -> Option<GeoPoint> 
 
 /// User albums and folders, parents first, and each one's `Z_PK`.
 fn read_albums(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Result<(Vec<PhotosAlbum>, HashMap<i64, String>), PhotosError> {
-    let Some(table) = reader.optional("ZGENERICALBUM", warnings)? else { return Ok((Vec::new(), HashMap::new())) };
+    let none = || (Vec::new(), HashMap::new());
+    let Some(table) = reader.find("ZGENERICALBUM") else { return Ok(none()) };
     struct Raw {
         pk: i64,
         uuid: String,
@@ -830,21 +1061,25 @@ fn read_albums(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Result<(
     }
     let mut raw = Vec::new();
     let mut seen = HashSet::new();
-    for row in &table.rows {
+    let columns = ["Z_PK", "ZUUID", "ZTITLE", "ZKIND", "ZPARENTFOLDER", "ZTRASHEDSTATE"];
+    let read = reader.optional_scan(&table, &columns, warnings, |_, row| {
         let kind = match table.int(row, "ZKIND") {
             Some(ALBUM_KIND_ALBUM) => AlbumKind::Album,
             Some(ALBUM_KIND_FOLDER) => AlbumKind::Folder,
-            _ => continue,
+            _ => return,
         };
         if table.flag(row, "ZTRASHEDSTATE") {
-            continue;
+            return;
         }
-        let (Some(pk), Some(uuid)) = (table.int(row, "Z_PK"), table.text(row, "ZUUID").filter(|u| valid_uuid(u))) else { continue };
+        let (Some(pk), Some(uuid)) = (table.int(row, "Z_PK"), table.text(row, "ZUUID").filter(|u| valid_uuid(u))) else { return };
         if !seen.insert(uuid.clone()) {
-            continue;
+            return;
         }
         let title = table.text(row, "ZTITLE").unwrap_or_default();
         raw.push(Raw { pk, uuid, title, kind, parent_pk: table.int(row, "ZPARENTFOLDER") });
+    })?;
+    if !read {
+        return Ok(none());
     }
     let folders: HashMap<i64, (String, Option<i64>)> =
         raw.iter().filter(|a| a.kind == AlbumKind::Folder).map(|a| (a.pk, (a.uuid.clone(), a.parent_pk))).collect();
@@ -883,28 +1118,33 @@ fn read_albums(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Result<(
     Ok((ordered.into_iter().map(|(_, album, _)| album).collect(), pks))
 }
 
-/// Asset UUIDs of each album, in album order, from the `Z_<n>ASSETS` join table.
+/// Each album's assets, as positions in the asset index, in album order, from the
+/// `Z_<n>ASSETS` join table.
 fn read_album_assets(
     reader: &TableReader<'_>,
     albums: &HashMap<i64, String>,
-    assets: &HashMap<i64, String>,
+    assets: &HashMap<i64, usize>,
     warnings: &mut Vec<String>,
-) -> Result<HashMap<String, Vec<String>>, PhotosError> {
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    let Some((join, album_col, asset_col, order_col)) = reader.join("ASSETS", "ALBUMS", "ASSETS") else { return Ok(out) };
-    let Some(links) = reader.optional_table(join, warnings)? else { return Ok(out) };
+) -> Result<HashMap<String, Vec<usize>>, PhotosError> {
+    let mut out: HashMap<String, Vec<usize>> = HashMap::new();
+    let Some((links, album_col, asset_col, order_col)) = reader.join("ASSETS", "ALBUMS", "ASSETS") else { return Ok(out) };
     let mut ordered: HashMap<&String, Vec<(i64, i64)>> = HashMap::new();
-    for row in &links.rows {
-        let (Some(album), Some(asset)) = (links.int(row, &album_col), links.int(row, &asset_col)) else { continue };
-        let Some(album_uuid) = albums.get(&album) else { continue };
+    let mut columns = vec![album_col.as_str(), asset_col.as_str()];
+    columns.extend(order_col.as_deref());
+    let read = reader.optional_scan(&links, &columns, warnings, |_, row| {
+        let (Some(album), Some(asset)) = (links.int(row, &album_col), links.int(row, &asset_col)) else { return };
+        let Some(album_uuid) = albums.get(&album) else { return };
         let order = order_col.as_deref().and_then(|c| links.int(row, c)).unwrap_or(i64::MAX);
         ordered.entry(album_uuid).or_default().push((order, asset));
+    })?;
+    if !read {
+        return Ok(out);
     }
     for (album, mut members) in ordered {
         members.sort();
         let mut seen = HashSet::new();
-        let uuids = members.into_iter().filter(|(_, asset)| seen.insert(*asset)).filter_map(|(_, asset)| assets.get(&asset).cloned()).collect();
-        out.insert(album.clone(), uuids);
+        let positions = members.into_iter().filter(|(_, asset)| seen.insert(*asset)).filter_map(|(_, asset)| assets.get(&asset).copied()).collect();
+        out.insert(album.clone(), positions);
     }
     Ok(out)
 }
@@ -916,3 +1156,5 @@ pub use photokit_source::PhotoKitSource;
 mod fixture;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_scale;

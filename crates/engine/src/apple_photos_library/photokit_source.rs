@@ -53,8 +53,9 @@ impl PhotoKitSource {
         Ok(Self { library, fallback, albums, album_ids, warnings })
     }
 
-    fn known(&self, uuid: &str) -> Option<PhotosAsset> {
-        self.fallback.as_ref().and_then(|f| f.by_uuid.get(uuid).and_then(|&i| f.assets.get(i))).cloned()
+    /// The same assets read from `Photos.sqlite`, by UUID.
+    fn known(&self, uuids: &[String]) -> Result<HashMap<String, PhotosAsset>, PhotosError> {
+        self.fallback.as_ref().map_or_else(|| Ok(HashMap::new()), |f| f.assets_by_uuid(uuids))
     }
 }
 
@@ -64,13 +65,14 @@ impl PhotosSource for PhotoKitSource {
     }
 
     fn assets(&self, start: usize, limit: usize) -> Result<Vec<PhotosAsset>, PhotosError> {
-        Ok(self
-            .library
-            .assets(start, limit)
+        let page = self.library.assets(start, limit);
+        let uuids: Vec<String> = page.iter().filter_map(|a| uuid_of(&a.local_id)).collect();
+        let known = self.known(&uuids)?;
+        Ok(page
             .into_iter()
             .filter_map(|a| {
-                let known = uuid_of(&a.local_id).and_then(|u| self.known(&u));
-                map_asset(a, known.as_ref())
+                let found = uuid_of(&a.local_id).and_then(|u| known.get(&u));
+                map_asset(a, found)
             })
             .collect())
     }
@@ -79,8 +81,9 @@ impl PhotosSource for PhotoKitSource {
         if !valid_uuid(uuid) {
             return Ok(None);
         }
-        let found = self.library.asset(&format!("{uuid}{ASSET_ID_SUFFIX}"));
-        Ok(found.and_then(|a| map_asset(a, self.known(uuid).as_ref())))
+        let Some(found) = self.library.asset(&format!("{uuid}{ASSET_ID_SUFFIX}")) else { return Ok(None) };
+        let known = self.known(&[uuid.to_owned()])?;
+        Ok(map_asset(found, known.get(uuid)))
     }
 
     fn albums(&self) -> Result<Vec<PhotosAlbum>, PhotosError> {

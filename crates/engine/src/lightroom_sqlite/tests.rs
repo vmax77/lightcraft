@@ -337,10 +337,10 @@ fn reserved_page_trailer_cannot_supply_cells() {
 #[test]
 fn utf16_and_overflow_payloads_are_supported() {
     let mut payload = vec![2, 17, b'A', 0];
-    assert_eq!(decode_record(&payload, 1, TextEncoding::Utf16Le).unwrap(), vec![Value::Text("A".into())]);
+    assert_eq!(decode_record(&payload, 1, None, TextEncoding::Utf16Le).unwrap(), vec![Value::Text("A".into())]);
     payload.clear();
     payload.extend([2, 17, 0, b'A']);
-    assert_eq!(decode_record(&payload, 1, TextEncoding::Utf16Be).unwrap(), vec![Value::Text("A".into())]);
+    assert_eq!(decode_record(&payload, 1, None, TextEncoding::Utf16Be).unwrap(), vec![Value::Text("A".into())]);
 
     let mut main = vec![0u8; 2 * 512];
     let db = Database {
