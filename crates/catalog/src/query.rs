@@ -71,6 +71,10 @@ pub struct Filter {
     /// A folder on disk: its files only (browsed ones too); `subfolders` includes everything below.
     pub folder: Option<String>,
     pub subfolders: bool,
+    /// An Apple Photos library (its `.photoslibrary` path): only the proxies of its assets
+    /// ([`crate::Source::ApplePhotos`]), which no other view shows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apple_photos: Option<String>,
     /// Smart-album rules (all / any / none, nested groups; see [`crate::rules`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_set: Option<crate::RuleSet>,
@@ -399,7 +403,17 @@ impl Filter {
         if p.deleted != self.deleted {
             return false;
         }
+        if let Some(library) = &self.apple_photos {
+            let crate::Source::ApplePhotos { library: of, .. } = &p.source else { return false };
+            if of != library {
+                return false;
+            }
+        } else if matches!(p.source, crate::Source::ApplePhotos { .. }) {
+            // a proxy is shown by its Photos library's views only (even if it was made a library photo)
+            return false;
+        }
         match &self.folder {
+            _ if self.apple_photos.is_some() => {}
             // browsed photos only show in folder views, and in Recently Deleted once deleted (#1430)
             None if p.local && !p.deleted => return false,
             None => {}

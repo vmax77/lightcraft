@@ -239,7 +239,12 @@ fn forget_local(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The browsed photos among `ids` (default: the selection) become library photos.
 fn add_to_library(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids: Vec<PhotoId> = s.targets(p)?.into_iter().filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.local)).collect();
+    // an Apple Photos proxy stays one: it is edited from a copy, never added in place
+    let ids: Vec<PhotoId> = s
+        .targets(p)?
+        .into_iter()
+        .filter(|id| s.catalog.photo(*id).is_some_and(|ph| ph.local && !matches!(ph.source, Source::ApplePhotos { .. })))
+        .collect();
     if ids.is_empty() {
         return Ok(json!({"added": 0}));
     }

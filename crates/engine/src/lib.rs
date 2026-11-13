@@ -67,6 +67,7 @@ mod model_download;
 pub mod open_path;
 pub mod originals;
 mod pdf;
+pub mod photos_browse;
 pub mod prep;
 pub mod preset_import;
 pub mod preset_luminar;
@@ -313,6 +314,8 @@ pub struct Session {
     pub clipboard: Option<Value>,
     /// The folder on disk the [`LibrarySource::Folder`] view browses.
     pub browse: Option<Browse>,
+    /// The Apple Photos library the [`LibrarySource::ApplePhotos`] view shows, and which part of it.
+    pub photos_browse: Option<photos_browse::PhotosBrowse>,
     /// The folder the [`LibrarySource::LibraryFolder`] view shows: the library's photos imported
     /// from it and from the folders inside it.
     pub library_folder: Option<String>,
@@ -513,6 +516,7 @@ impl Session {
             meta_clipboard: None,
             browse: None,
             library_folder: None,
+            photos_browse: None,
             previous_active: None,
             copy_groups: lightcraft_develop::SettingsGroup::default_copy(),
             presets: presets::PresetList::new(presets::builtin()),
@@ -1182,8 +1186,18 @@ impl Session {
 
     /// Photos shown in the grid/filmstrip for the current source, filter and sort.
     pub fn visible(&mut self) -> &[PhotoId] {
-        let mut key =
-            (self.catalog.revision, format!("{:?}|{:?}|{:?}|{:?}|{:?}", self.source, self.filter, self.sort, self.browse, self.library_folder));
+        let mut key = (
+            self.catalog.revision,
+            format!(
+                "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                self.source,
+                self.filter,
+                self.sort,
+                self.browse,
+                self.library_folder,
+                self.photos_browse.as_ref().map(|b| (&b.library, &b.view, b.generation))
+            ),
+        );
         // What a held view is told apart by: what is shown and how, and for a smart album its rules (rules that were
         // changed ask something else). Not the checks of Missing Photos below: they fill the view in, they are
         // no other view.
@@ -1326,6 +1340,9 @@ impl Session {
         if source == LibrarySource::LibraryFolder {
             // no folder chosen: nothing (`.` names no folder)
             f.library_folder = Some(self.library_folder.clone().unwrap_or_else(|| ".".into()));
+        }
+        if source == LibrarySource::ApplePhotos {
+            self.photos_filter(&mut f);
         }
         f
     }

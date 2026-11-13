@@ -65,7 +65,7 @@
 //! | 11 | lens database profiles named in the Optics panel | `EmbeddedLens.source` |
 //! | 12 | history steps and versions share segmentation grids (#2154) | `Catalog.grids`, `SegMask.grid` |
 //! | 13 | Lens Blur | `DevelopSettings.lens_blur`, `Mask.adjust.lens_blur` |
-//! | 14 | Apple Photos proxies (#1622) | `Source::ApplePhotos` |
+//! | 14 | Apple Photos proxies (#1622) | `Source::ApplePhotos`, `Filter.apple_photos` |
 //!
 //! Rules:
 //! - **Bump [`VERSION`]** (and add a row above) in the change that adds an [`Op`] variant or a

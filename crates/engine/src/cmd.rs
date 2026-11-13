@@ -34,6 +34,7 @@ mod merge;
 pub mod metadata;
 pub mod missing;
 mod organize;
+mod photos_view;
 mod prefs;
 mod preset_files;
 pub mod previews;
@@ -170,6 +171,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(print::specs());
         v.extend(before::specs());
         v.extend(browse::specs());
+        v.extend(photos_view::specs());
         v.extend(missing::specs());
         v.extend(recheck::specs());
         v.extend(lens_refresh::specs());

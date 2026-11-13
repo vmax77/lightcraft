@@ -1153,7 +1153,7 @@ mod photokit_source;
 pub use photokit_source::PhotoKitSource;
 
 #[cfg(test)]
-mod fixture;
+pub(crate) mod fixture;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

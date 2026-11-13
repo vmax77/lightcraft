@@ -22,6 +22,8 @@ pub enum LibrarySource {
     /// A folder the library's photos were imported from ([`crate::Session::library_folder`]),
     /// and the folders inside it (`library.folders`).
     LibraryFolder,
+    /// A view of an Apple Photos library ([`crate::Session::photos_browse`]): its assets' proxies.
+    ApplePhotos,
 }
 
 /// The folder a [`LibrarySource::Folder`] view shows.
@@ -52,7 +54,7 @@ impl LibrarySource {
             LibrarySource::RecentlyDeleted => f.deleted = true,
             LibrarySource::Picks => f.flag = Some(lightcraft_catalog::Flag::Pick),
             // the folder itself is filled in by the session (it holds the path)
-            LibrarySource::Folder | LibrarySource::Missing | LibrarySource::LibraryFolder => {}
+            LibrarySource::Folder | LibrarySource::Missing | LibrarySource::LibraryFolder | LibrarySource::ApplePhotos => {}
         }
         f
     }
@@ -67,6 +69,7 @@ impl LibrarySource {
             LibrarySource::Folder => "Folder".into(),
             LibrarySource::LibraryFolder => "Folder".into(),
             LibrarySource::Missing => "Missing Photos".into(),
+            LibrarySource::ApplePhotos => "Apple Photos".into(),
         }
     }
 }
