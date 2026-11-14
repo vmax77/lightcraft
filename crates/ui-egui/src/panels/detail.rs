@@ -624,7 +624,12 @@ fn window_views(mode: ViewMode, v: &Views) -> Vec<WindowView> {
 
 /// What the canvas says when nothing could be drawn: why the photo failed, or that it is rendering.
 fn none_message(app: &LightcraftApp, p: &egui::Painter, t: &Tokens, canvas: Rect, id: PhotoId) {
+    let waiting = app.photos_edit.waiting_text(id);
     match app.renderer.failure_of(Slot::Main, id) {
+        // a Photos item whose original is being copied or downloaded renders once it is there
+        Some(_) if waiting.is_some() => {
+            p.text(canvas.center(), Align2::CENTER_CENTER, crate::i18n::tr(waiting.unwrap_or_default()), t.font(13.0), t.text_dim);
+        }
         Some(e) => {
             p.text(canvas.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, crate::i18n::tr("This photo can't be opened"), t.semibold(14.0), t.text);
             p.text(canvas.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, e, t.font(12.0), t.text_dim);

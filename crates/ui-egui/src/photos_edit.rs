@@ -47,6 +47,14 @@ impl PhotosEdit {
     fn has(&self, id: PhotoId) -> bool {
         self.running.as_ref().is_some_and(|r| r.copy.id == id) || self.queue.iter().any(|c| c.id == id)
     }
+
+    /// What the loupe says in place of "This photo can't be opened" while `id`'s copy is made or
+    /// waits: a proxy whose original is only in iCloud (or not readable yet) fails to render until
+    /// its copy is there, and then renders by itself. `None` when no copy of it is under way.
+    pub fn waiting_text(&self, id: PhotoId) -> Option<&'static str> {
+        let copy = self.running.as_ref().map(|r| &r.copy).filter(|c| c.id == id).or_else(|| self.queue.iter().find(|c| c.id == id))?;
+        Some(if copy.in_icloud() { "Downloading from iCloud…" } else { "Copying from Apple Photos…" })
+    }
 }
 
 /// `applePhotos.edit` from the UI: queue the copies of the target photos (made one at a time on a
@@ -145,4 +153,34 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
     }
     start_next(app);
     ctx.request_repaint();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lightcraft_catalog::PhotosLink;
+
+    fn copy(id: u64, original: Option<&str>) -> PhotosCopy {
+        PhotosCopy {
+            id: PhotoId(id),
+            link: PhotosLink { library: "Test.photoslibrary".into(), uuid: format!("U{id}") },
+            original: original.map(PathBuf::from),
+            size: 10,
+            file_name: format!("U{id}.JPG"),
+            dir: PathBuf::from("lib"),
+        }
+    }
+
+    /// The loupe of a Photos item whose copy waits says so, not "This photo can't be opened": an
+    /// iCloud-only original can't render until it has been downloaded.
+    #[test]
+    fn a_photo_whose_copy_waits_says_so_instead_of_failing() {
+        let mut edit = PhotosEdit::default();
+        assert_eq!(edit.waiting_text(PhotoId(1)), None);
+        edit.queue.push_back(copy(1, None));
+        edit.queue.push_back(copy(2, Some("Test.photoslibrary/originals/0/U2.jpg")));
+        assert_eq!(edit.waiting_text(PhotoId(1)), Some("Downloading from iCloud…"));
+        assert_eq!(edit.waiting_text(PhotoId(2)), Some("Copying from Apple Photos…"));
+        assert_eq!(edit.waiting_text(PhotoId(3)), None);
+    }
 }

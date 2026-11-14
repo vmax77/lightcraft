@@ -337,6 +337,14 @@ pub(crate) fn failed_pill(
     id: &str,
     error: &str,
 ) {
+    if let Some(waiting) = app.photos_edit.waiting_text(photo.id) {
+        // not a failure: the Photos item's original is being copied or downloaded to edit it
+        let text = crate::i18n::tr(waiting);
+        let r = loupe_pill(ui, canvas, over, navigator, id, text, false);
+        let resp = ui.interact(r, egui::Id::unique(("render-failed", id)), Sense::hover());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
+        return;
+    }
     let offline = matches!(&photo.source, lightcraft_catalog::Source::File { path } if app.session.media.availability.is_offline(path));
     let text = crate::i18n::tr(if offline { "Original offline · no smart preview" } else { "This photo can't be opened" });
     let r = loupe_pill(ui, canvas, over, navigator, id, text, true);
