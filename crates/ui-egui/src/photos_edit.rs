@@ -1,6 +1,7 @@
 //! Editing an Apple Photos item in the app (issue #1622): when the Edit tools open on a Photos
-//! item whose original is on this Mac, the original is copied into the library on a worker,
-//! under a row in the activity stack, and the photo becomes that copy (see
+//! item, its original is copied into the library on a worker (downloaded from iCloud first when
+//! it isn't on this Mac, under a row that shows progress and can stop it), under a row in the
+//! activity stack, and the photo becomes that copy (see
 //! [`lightcraft_engine::photos_edit`]). Edits made meanwhile apply to the same photo and stay
 //! with it. `applePhotos.edit` from a menu or the control channel queues its photos the same way.
 
@@ -20,8 +21,8 @@ use crate::LightcraftApp;
 pub struct PhotosEdit {
     running: Option<Running>,
     queue: VecDeque<PhotosCopy>,
-    /// Photos whose copy failed or can't be made yet: the Edit tools don't try again for them
-    /// until asked (`applePhotos.edit`), so a failure is told once, not every frame.
+    /// Photos whose copy failed, or whose download was stopped: the Edit tools don't try again
+    /// for them until asked (`applePhotos.edit`), so a failure is told once, not every frame.
     failed: HashSet<PhotoId>,
 }
 
@@ -73,11 +74,21 @@ fn start_next(app: &mut LightcraftApp) {
     let Some(copy) = app.photos_edit.queue.pop_front() else { return };
     let (tx, rx) = std::sync::mpsc::channel();
     let work = copy.clone();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (label, how) = if copy.in_icloud() {
+        // a download can take a while and be stopped; its row shows how far it got
+        ("Downloading from iCloud:", lightcraft_engine::activity::Cancel::Flag(cancel.clone()))
+    } else {
+        ("Copying from Apple Photos:", lightcraft_engine::activity::Cancel::No)
+    };
+    let label = format!("{} {}", crate::i18n::tr(label), copy.file_name);
+    let guard = app.session.activity.start("applePhotosCopy", &label, how);
+    let handle = guard.handle();
     std::thread::spawn(move || {
-        let _ = tx.send(work.make());
+        let mut progress = |f: f64| handle.progress((f * 1000.0).round() as u64, 1000);
+        let mut fetch = lightcraft_engine::photos_edit::photokit_fetch(&cancel, &mut progress);
+        let _ = tx.send(work.make(&mut fetch));
     });
-    let label = format!("{} {}", crate::i18n::tr("Copying from Apple Photos:"), copy.file_name);
-    let guard = app.session.activity.start("applePhotosCopy", &label, lightcraft_engine::activity::Cancel::No);
     app.photos_edit.running = Some(Running { copy, rx, _guard: guard });
 }
 

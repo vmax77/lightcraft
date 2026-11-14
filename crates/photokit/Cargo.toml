@@ -15,13 +15,14 @@ workspace = true
 # objc2-app-kit already is); objc2, objc2-foundation and block2 are MIT.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDate", "NSObject", "NSSortDescriptor", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSData", "NSDate", "NSError", "NSObject", "NSSortDescriptor", "NSString"] }
 objc2-photos = { version = "0.3", default-features = false, features = [
     "std",
     "block2",
     "objc2-core-location",
     "PHAsset",
     "PHAssetResource",
+    "PHAssetResourceManager",
     "PHCollection",
     "PHFetchOptions",
     "PHFetchResult",

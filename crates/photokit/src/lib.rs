@@ -88,6 +88,63 @@ impl std::fmt::Display for PhotoKitError {
 
 impl std::error::Error for PhotoKitError {}
 
+/// Why an original could not be fetched ([`download_original`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DownloadError {
+    /// PhotoKit can't be used (see [`PhotoKitError`]).
+    PhotoKit(PhotoKitError),
+    /// No asset has this identifier in the System Photo Library.
+    NotFound,
+    /// The asset has no original photo or video resource.
+    NoOriginal,
+    /// Stopped by the caller.
+    Cancelled,
+    /// Nothing arrived for [`DOWNLOAD_IDLE`].
+    TimedOut,
+    /// PhotoKit's reason (offline, iCloud error, …).
+    Failed(String),
+    /// Writing what arrived failed.
+    Write(String),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PhotoKit(e) => e.fmt(f),
+            Self::NotFound => f.write_str("the photo is not in the System Photo Library"),
+            Self::NoOriginal => f.write_str("Photos has no original for this item"),
+            Self::Cancelled => f.write_str("the download was cancelled"),
+            Self::TimedOut => f.write_str("the download from iCloud stalled"),
+            Self::Failed(why) => write!(f, "Photos could not fetch the original: {why}"),
+            Self::Write(why) => write!(f, "the original could not be saved: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for DownloadError {}
+
+impl From<PhotoKitError> for DownloadError {
+    fn from(e: PhotoKitError) -> Self {
+        Self::PhotoKit(e)
+    }
+}
+
+/// How long [`download_original`] waits for the next part before giving up.
+pub const DOWNLOAD_IDLE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Fetch the original photo or video of the asset `local_id` (`<UUID>/L0/001`), from iCloud when it
+/// is not on this Mac, writing its bytes to `out` as they arrive. Photos writes nothing for it but
+/// its own cache. `progress` is told the fraction downloaded (0–1, on this thread); setting
+/// `cancel` stops it. Returns the number of bytes written. Call it from a worker thread.
+pub fn download_original(
+    local_id: &str,
+    out: &mut dyn std::io::Write,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<u64, DownloadError> {
+    imp::download_original(local_id, out, cancel, progress)
+}
+
 /// Photo, video or something else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaKind {
@@ -176,6 +233,15 @@ mod imp {
         Err(PhotoKitError::NotMacOs)
     }
 
+    pub fn download_original(
+        _: &str,
+        _: &mut dyn std::io::Write,
+        _: &std::sync::atomic::AtomicBool,
+        _: &mut dyn FnMut(f64),
+    ) -> Result<u64, super::DownloadError> {
+        Err(PhotoKitError::NotMacOs.into())
+    }
+
     /// The System Photo Library; never opens off macOS.
     #[derive(Debug)]
     pub struct Library(());
@@ -222,6 +288,10 @@ mod tests {
         assert_eq!(access(), Err(expected));
         assert_eq!(request_access(), Err(expected));
         assert_eq!(Library::open().err(), Some(expected));
+        let mut out = Vec::new();
+        let r = download_original("A/L0/001", &mut out, &std::sync::atomic::AtomicBool::new(false), &mut |_| {});
+        assert_eq!(r, Err(DownloadError::PhotoKit(expected)));
+        assert!(out.is_empty());
     }
 
     #[test]

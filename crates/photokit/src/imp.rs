@@ -293,3 +293,123 @@ fn extended_metadata(asset: &PHAsset, out: &mut Asset) {
         }
     }
 }
+
+/// What the resource request's handlers pass to the waiting thread.
+enum Part {
+    Data(Vec<u8>),
+    Progress(f64),
+    /// The request ended: `None` when it succeeded, else PhotoKit's reason.
+    Done(Option<String>),
+}
+
+/// The original photo or video resource of `asset`.
+fn original_of(asset: &PHAsset) -> Option<Retained<PHAssetResource>> {
+    // SAFETY: a class method taking an asset; it returns an array of resources (no fetch result).
+    let resources = unsafe { PHAssetResource::assetResourcesForAsset(asset) };
+    resources.iter().find(|r| {
+        // SAFETY: a getter without arguments returning an integer enum.
+        let kind = unsafe { r.r#type() };
+        kind == PHAssetResourceType::Photo || kind == PHAssetResourceType::Video
+    })
+}
+
+pub fn download_original(
+    local_id: &str,
+    out: &mut dyn std::io::Write,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<u64, super::DownloadError> {
+    use super::DownloadError;
+    use std::sync::atomic::Ordering;
+
+    let access = access()?;
+    if !access.can_read() {
+        return Err(PhotoKitError::NotAllowed(access).into());
+    }
+    let ids = NSArray::from_retained_slice(&[NSString::from_str(local_id)]);
+    // SAFETY: a class method taking an array of NSString identifiers and optional options.
+    let found = unsafe { PHAsset::fetchAssetsWithLocalIdentifiers_options(&ids, None) };
+    let asset = each(&found, 0, 1).into_iter().next().ok_or(DownloadError::NotFound)?;
+    let resource = original_of(&asset).ok_or(DownloadError::NoOriginal)?;
+
+    let (tx, rx) = mpsc::channel::<Part>();
+    let (on_data, on_progress, on_done) = (tx.clone(), tx.clone(), tx);
+    let data = RcBlock::new(move |chunk: std::ptr::NonNull<objc2_foundation::NSData>| {
+        // SAFETY: PhotoKit passes a valid NSData that lives for the call; it is copied out at once.
+        let bytes = unsafe { chunk.as_ref() }.to_vec();
+        let _ = on_data.send(Part::Data(bytes));
+    });
+    let done = RcBlock::new(move |error: *mut objc2_foundation::NSError| {
+        // SAFETY: the error is nil on success, else a valid NSError that lives for the call.
+        let why = unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string());
+        let _ = on_done.send(Part::Done(why));
+    });
+    let progressed = RcBlock::new(move |fraction: std::ffi::c_double| {
+        let _ = on_progress.send(Part::Progress(fraction));
+    });
+    // SAFETY: `new` makes default options; the setters take a bool and a progress block of the
+    // declared type (`void (^)(double)`), which the options object copies and keeps.
+    let options = unsafe {
+        let options = objc2_photos::PHAssetResourceRequestOptions::new();
+        options.setNetworkAccessAllowed(true);
+        options.setProgressHandler(RcBlock::as_ptr(&progressed));
+        options
+    };
+    // SAFETY: the manager is PhotoKit's shared one; the handlers have the block signatures the
+    // header declares (`void (^)(NSData *)`, `void (^)(NSError *)`), PhotoKit copies them before
+    // returning, and they only send owned values on a channel (a send to a dropped receiver is ignored).
+    let manager = unsafe { objc2_photos::PHAssetResourceManager::defaultManager() };
+    let request =
+        unsafe { manager.requestDataForAssetResource_options_dataReceivedHandler_completionHandler(&resource, Some(&options), &data, &done) };
+
+    let mut written: u64 = 0;
+    let mut failure: Option<DownloadError> = None;
+    let mut idle = Duration::ZERO;
+    const TICK: Duration = Duration::from_millis(200);
+    loop {
+        if failure.is_none() && cancel.load(Ordering::Relaxed) {
+            failure = Some(DownloadError::Cancelled);
+            // SAFETY: cancels the request this call made, by the id PhotoKit gave it.
+            unsafe { manager.cancelDataRequest(request) };
+        }
+        match rx.recv_timeout(TICK) {
+            Ok(Part::Data(bytes)) => {
+                idle = Duration::ZERO;
+                if failure.is_none() {
+                    match out.write_all(&bytes) {
+                        Ok(()) => written = written.saturating_add(bytes.len() as u64),
+                        Err(e) => {
+                            failure = Some(DownloadError::Write(e.to_string()));
+                            // SAFETY: as above.
+                            unsafe { manager.cancelDataRequest(request) };
+                        }
+                    }
+                }
+            }
+            Ok(Part::Progress(fraction)) => {
+                idle = Duration::ZERO;
+                if fraction.is_finite() {
+                    progress(fraction.clamp(0.0, 1.0));
+                }
+            }
+            Ok(Part::Done(why)) => {
+                return match (failure, why) {
+                    (Some(f), _) => Err(f),
+                    (None, Some(why)) => Err(DownloadError::Failed(why)),
+                    (None, None) => Ok(written),
+                };
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                idle += TICK;
+                // after a cancel the completion is waited for a few seconds at most
+                let limit = if failure.is_some() { Duration::from_secs(5) } else { super::DOWNLOAD_IDLE };
+                if idle >= limit {
+                    // SAFETY: as above.
+                    unsafe { manager.cancelDataRequest(request) };
+                    return Err(failure.unwrap_or(DownloadError::TimedOut));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(failure.unwrap_or(DownloadError::Failed("PhotoKit ended the request".into()))),
+        }
+    }
+}

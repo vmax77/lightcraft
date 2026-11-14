@@ -55,6 +55,10 @@ fn proxy(s: &Session, uuid: &str) -> PhotoId {
     s.catalog.photos().find(|p| matches!(&p.source, Source::ApplePhotos { uuid: u, .. } if u == uuid)).unwrap().id
 }
 
+fn no_fetch(_: &str, _: &mut dyn std::io::Write) -> Result<u64, String> {
+    panic!("nothing is fetched for an original on this Mac")
+}
+
 fn listing(dir: &Path) -> Vec<(std::path::PathBuf, u64, Option<std::time::SystemTime>)> {
     let mut out = Vec::new();
     let mut todo = vec![dir.to_path_buf()];
@@ -118,7 +122,8 @@ fn a_copy_that_cant_be_made_leaves_the_proxy_as_it_was() {
     let library = library();
     let (mut s, lib) = session("photos-edit-fail", &library);
     let copies = lib.join("Originals").join("From Apple Photos");
-    // only in iCloud: nothing to copy from yet
+    // only in iCloud, and PhotoKit can't be asked here (a test binary has no Photos usage
+    // description; off macOS there is none)
     let e = proxy(&s, ASSET_E);
     let err = s.execute("applePhotos.edit", &json!({"ids": [e.0]})).unwrap_err().to_string();
     assert!(err.contains("iCloud"), "{err}");
@@ -135,7 +140,7 @@ fn a_copy_that_cant_be_made_leaves_the_proxy_as_it_was() {
     // a record that changed while its copy was made is not taken over
     let d = proxy(&s, ASSET_D);
     let plan = s.photos_copies(&[d]).unwrap();
-    let made = plan[0].make().unwrap();
+    let made = plan[0].make(&mut no_fetch).unwrap();
     s.adopt_photos_copy(&plan[0], &made).unwrap();
     assert!(s.adopt_photos_copy(&plan[0], &made).is_err(), "already a copy");
 }
@@ -148,4 +153,44 @@ fn editing_needs_a_library_folder_for_the_copy() {
     let d = proxy(&s, ASSET_D);
     let err: Value = json!(s.execute("applePhotos.edit", &json!({"ids": [d.0]})).unwrap_err().to_string());
     assert!(err.as_str().unwrap().contains("open a library"), "{err}");
+}
+
+#[test]
+fn an_original_only_in_icloud_is_fetched_into_the_copy_and_checked() {
+    let library = library();
+    let before = listing(&library.root);
+    let (mut s, lib) = session("photos-edit-icloud", &library);
+    let copies = lib.join("Originals").join("From Apple Photos");
+    let e = proxy(&s, ASSET_E);
+    let plan = s.photos_copies(&[e]).unwrap();
+    assert!(plan[0].in_icloud());
+    let bytes = b"the original, as iCloud sends it".to_vec();
+
+    // a fetch that fails, sends nothing, or sends other than Photos' recorded size leaves no file
+    let mut failing = |_: &str, out: &mut dyn std::io::Write| -> Result<u64, String> {
+        out.write_all(b"part").unwrap();
+        Err("offline".into())
+    };
+    let err = plan[0].make(&mut failing).unwrap_err();
+    assert!(err.contains("iCloud") && err.contains("offline"), "{err}");
+    let mut empty = |_: &str, _: &mut dyn std::io::Write| -> Result<u64, String> { Ok(0) };
+    assert!(plan[0].make(&mut empty).is_err());
+    let mut sized = plan[0].clone();
+    sized.size = bytes.len() as u64 + 1;
+    let mut fetch = |uuid: &str, out: &mut dyn std::io::Write| -> Result<u64, String> {
+        assert_eq!(uuid, ASSET_E);
+        out.write_all(&bytes).unwrap();
+        Ok(bytes.len() as u64)
+    };
+    let err = sized.make(&mut fetch).unwrap_err();
+    assert!(err.contains("bytes"), "{err}");
+    assert!(listing(&copies).is_empty(), "no partial copy is left");
+
+    // the bytes that came, under the item's name, and the item becomes that copy
+    let made = plan[0].make(&mut fetch).unwrap();
+    assert_eq!(std::fs::read(&made).unwrap(), bytes);
+    s.adopt_photos_copy(&plan[0], &made).unwrap();
+    let p = s.catalog.photo(e).unwrap();
+    assert!(p.in_library() && matches!(&p.source, Source::File { path } if Path::new(path) == made));
+    assert_eq!(listing(&library.root), before, "nothing was written in the Photos library");
 }

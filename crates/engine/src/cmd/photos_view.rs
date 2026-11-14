@@ -48,7 +48,13 @@ fn libraries(_: &mut Session, _: &Value) -> crate::Result<Value> {
 fn edit(s: &mut Session, p: &Value) -> crate::Result<Value> {
     const C: &str = "applePhotos.edit";
     let ids = s.targets(p).map_err(|e| bad(C, e.to_string()))?;
-    let done = s.edit_photos_items(&ids).map_err(|e| bad(C, e.to_string()))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (cancel, mut progress) = (std::sync::atomic::AtomicBool::new(false), |_: f64| {});
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut fetch = crate::photos_edit::photokit_fetch(&cancel, &mut progress);
+    #[cfg(target_arch = "wasm32")]
+    let mut fetch = |_: &str, _: &mut dyn std::io::Write| -> Result<u64, String> { Err("Apple Photos is only available on macOS".into()) };
+    let done = s.edit_photos_items(&ids, &mut fetch).map_err(|e| bad(C, e.to_string()))?;
     Ok(json!({"copied": done.iter().map(|(id, path)| json!({"id": id.0, "path": path.to_string_lossy()})).collect::<Vec<_>>()}))
 }
 
@@ -86,7 +92,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit Apple Photos Item",
             [],
             None,
-            "{ids?: photo ids (default: the selection)} — make each Apple Photos item a library photo to edit: its original is copied into the library's Originals/From Apple Photos/ and compared byte for byte, then the photo points at the copy, keeping its ratings and edits; nothing is written in the Photos library. Others are left as they are. An original only in iCloud is an error → {copied: [{id, path}]}",
+            "{ids?: photo ids (default: the selection)} — make each Apple Photos item a library photo to edit: its original is copied into the library's Originals/From Apple Photos/ and compared byte for byte, then the photo points at the copy, keeping its ratings and edits; nothing is written in the Photos library. An original only in iCloud is downloaded first (System Photo Library, macOS app only). Others are left as they are → {copied: [{id, path}]}",
             always,
             edit
         ),
