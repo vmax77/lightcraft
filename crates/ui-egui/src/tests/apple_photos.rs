@@ -113,7 +113,7 @@ fn a_view_is_read_in_the_background_and_a_failed_read_says_why() {
 }
 
 #[test]
-fn opening_the_edit_tools_on_a_photos_item_copies_it_into_the_library() {
+fn the_first_edit_of_a_photos_item_copies_it_into_the_library() {
     let dir = std::env::temp_dir().join(format!("lc-ui-photos-edit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let package = dir.join("Test.photoslibrary");
@@ -154,8 +154,13 @@ fn opening_the_edit_tools_on_a_photos_item_copies_it_into_the_library() {
     h.request("ui.set", json!({"view": "detail"}), T);
     h.settle(SETTLE);
     assert!(!h.app.photos_edit.busy());
-    // the Edit tools open on it: copied in the background, with a row in the activity stack
+    // nor does looking at it in the Edit tools
     h.app.ui.right = crate::state::RightPanel::Edit;
+    h.settle(SETTLE);
+    assert!(!h.app.photos_edit.busy());
+    assert!(matches!(h.app.session.catalog.photo(u1).unwrap().source, lightcraft_catalog::Source::ApplePhotos { .. }), "viewed, not copied");
+    // its first edit: copied in the background, with a row in the activity stack
+    h.app.session.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
     h.step();
     let list = h.app.session.activity.list();
     assert!(!h.app.photos_edit.busy() || list.iter().any(|t| t.kind == "applePhotosCopy"), "{list:?}");
@@ -164,10 +169,14 @@ fn opening_the_edit_tools_on_a_photos_item_copies_it_into_the_library() {
     let lightcraft_catalog::Source::File { path } = &p.source else { panic!("not copied: {:?}", p.source) };
     assert_eq!(std::fs::read(path).unwrap(), std::fs::read(&original).unwrap());
     assert!(p.in_library() && p.from_photos.as_ref().is_some_and(|l| l.uuid == "U1" && l.library == library));
+    assert!(p.is_edited(), "the edit stays with the copy");
     assert!(h.app.session.activity.list().iter().all(|t| t.kind != "applePhotosCopy"), "its row went");
 
-    // one only in iCloud says so once, and stays as it is
+    // one only in iCloud, once edited, says so once, and stays as it is
     h.app.session.execute("library.select", &json!({"ids": [u2.0]})).unwrap();
+    h.settle(SETTLE);
+    assert!(h.app.ui.toast.is_none(), "viewing it asks for nothing");
+    h.app.session.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
     h.settle(SETTLE);
     let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
     assert!(toast.contains("iCloud"), "{toast:?}");

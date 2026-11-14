@@ -1,9 +1,11 @@
-//! Editing an Apple Photos item in the app (issue #1622): when the Edit tools open on a Photos
-//! item, its original is copied into the library on a worker (downloaded from iCloud first when
-//! it isn't on this Mac, under a row that shows progress and can stop it), under a row in the
-//! activity stack, and the photo becomes that copy (see
-//! [`lightcraft_engine::photos_edit`]). Edits made meanwhile apply to the same photo and stay
-//! with it. `applePhotos.edit` from a menu or the control channel queues its photos the same way.
+//! Editing an Apple Photos item in the app (issue #1622): when a Photos item open in the Edit
+//! tools is first edited, its original is copied into the library on a worker (downloaded from
+//! iCloud first when it isn't on this Mac, under a row that shows progress and can stop it),
+//! under a row in the activity stack, and the photo becomes that copy (see
+//! [`lightcraft_engine::photos_edit`]). Only looking at it in the Edit tools copies nothing: the
+//! proxy shows the original, or Photos' preview while that is only in iCloud. Edits made
+//! meanwhile apply to the same photo and stay with it. `applePhotos.edit` from a menu or the
+//! control channel queues its photos the same way, edited or not.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -105,17 +107,18 @@ fn start_next(app: &mut LightcraftApp) {
     app.photos_edit.queue.clear();
 }
 
-/// The Photos item the Edit tools are open on, when its original still has to be copied.
+/// The Photos item the Edit tools are open on, when it has been edited and its original still
+/// has to be copied. Viewing it unedited needs no copy.
 fn editing_proxy(app: &LightcraftApp) -> Option<PhotoId> {
     if crate::panels::detail::prep_mode(app) != lightcraft_engine::prep::Mode::Develop {
         return None;
     }
     let id = app.session.active()?;
     let p = app.session.catalog.photo(id)?;
-    matches!(p.source, Source::ApplePhotos { .. }).then_some(id)
+    (matches!(p.source, Source::ApplePhotos { .. }) && p.is_edited()).then_some(id)
 }
 
-/// Every frame: start the copy of a Photos item the Edit tools opened on, and take a finished copy.
+/// Every frame: start the copy of a Photos item edited in the Edit tools, and take a finished copy.
 pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
     if let Some(id) = editing_proxy(app)
         && !app.photos_edit.has(id)
