@@ -91,6 +91,20 @@ pub struct PhotosRead {
     pub warnings: Vec<String>,
 }
 
+/// The name a proxy shows: the name the file had when it was imported into Photos (`imported`),
+/// with the extension of the file Photos keeps (`stored`). They can differ: Photos may keep a
+/// JPEG of a photo imported as `IMG_1234.HEIC`, and the name has to say what the file is, or the
+/// copy made to edit it is a JPEG named `.HEIC`. Photos' own name when there is no imported one,
+/// and `uuid` when there is neither.
+pub(crate) fn proxy_file_name(imported: Option<&str>, stored: Option<&str>, uuid: &str) -> String {
+    let Some(imported) = imported else { return stored.unwrap_or(uuid).to_string() };
+    let path = std::path::Path::new(imported);
+    match (path.extension(), stored.and_then(|s| std::path::Path::new(s).extension())) {
+        (have, Some(kept)) if have.is_none_or(|h| !h.eq_ignore_ascii_case(kept)) => path.with_extension(kept).to_string_lossy().into_owned(),
+        _ => imported.to_string(),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{default_library, library_param, read_view};
 
@@ -170,7 +184,7 @@ mod native {
 
     /// What a proxy shows of `a`.
     fn item(a: &PhotosAsset) -> PhotosItem {
-        let file_name = a.original_file_name.clone().or_else(|| a.file_name.clone()).unwrap_or_else(|| a.uuid.clone());
+        let file_name = super::proxy_file_name(a.original_file_name.as_deref(), a.file_name.as_deref(), &a.uuid);
         let format = Path::new(&file_name).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
         let raw = a.uti.as_deref().is_some_and(|u| u.ends_with("raw-image"));
         let kind = match a.kind {
@@ -222,14 +236,15 @@ impl Session {
     /// that changed, and switch to the [`LibrarySource::ApplePhotos`] view. Proxies are Local
     /// records, journaled but not an undo step, like a browsed folder's.
     pub fn show_photos(&mut self, read: PhotosRead) -> Result<Value> {
-        // by asset: its proxy and the original it was linked to, or (the original's path
-        // being `None` there) the copy made of it to edit it, which is shown in its place
-        let mut known: HashMap<String, (PhotoId, Option<String>)> = HashMap::new();
+        // by asset: its proxy, the original it was linked to and the name it shows, or (the
+        // original's path being `None` there) the copy made of it to edit it, which is shown in
+        // its place
+        let mut known: HashMap<String, (PhotoId, Option<String>, String)> = HashMap::new();
         let mut copied: HashMap<String, PhotoId> = HashMap::new();
         for p in self.catalog.photos() {
             match (&p.source, &p.from_photos) {
                 (Source::ApplePhotos { library, uuid, original }, _) if *library == read.library => {
-                    known.insert(uuid.clone(), (p.id, original.clone()));
+                    known.insert(uuid.clone(), (p.id, original.clone(), p.file_name.clone()));
                 }
                 // a copy in Recently Deleted gives way to the asset's proxy
                 (_, Some(link)) if link.library == read.library && !p.deleted => {
@@ -250,8 +265,9 @@ impl Session {
             }
             let source = Source::ApplePhotos { library: read.library.clone(), uuid: item.uuid.clone(), original: item.original.clone() };
             match known.get(&item.uuid) {
-                Some((id, original)) => {
-                    if *original != item.original {
+                Some((id, original, file_name)) => {
+                    // also a proxy named before its name took the stored file's extension
+                    if *original != item.original || *file_name != item.file_name {
                         ops.push(Op::Relink { id: *id, file_name: item.file_name.clone(), source, format: Some(item.format.clone()) });
                         updated += 1;
                     }

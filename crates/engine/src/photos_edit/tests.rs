@@ -145,6 +145,24 @@ fn a_copy_that_cant_be_made_leaves_the_proxy_as_it_was() {
     assert!(s.adopt_photos_copy(&plan[0], &made).is_err(), "already a copy");
 }
 
+/// A proxy still named `.HEIC` (made before names took the extension of the file Photos keeps)
+/// whose original is a JPEG: the copy is a `.jpg`, so it opens as what it is.
+#[test]
+fn a_copy_is_named_with_the_extension_of_the_original() {
+    let library = library();
+    let (mut s, _lib) = session("photos-edit-ext", &library);
+    let d = proxy(&s, ASSET_D);
+    let Source::ApplePhotos { library: at, uuid, original } = s.catalog.photo(d).unwrap().source.clone() else { panic!("not a proxy") };
+    let source = Source::ApplePhotos { library: at, uuid, original };
+    s.apply_system(lightcraft_catalog::Op::Relink { id: d, file_name: "IMG_0004.HEIC".into(), source, format: Some("HEIC".into()) }).unwrap();
+    let plan = s.photos_copies(&[d]).unwrap();
+    assert_eq!(plan[0].file_name, "IMG_0004.jpg");
+    let r = s.execute("applePhotos.edit", &json!({"ids": [d.0]})).unwrap();
+    assert_eq!(r["copied"].as_array().map(Vec::len), Some(1), "{r}");
+    let Source::File { path } = &s.catalog.photo(d).unwrap().source else { panic!("not copied") };
+    assert_eq!(Path::new(path).file_name().unwrap(), "IMG_0004.jpg");
+}
+
 #[test]
 fn editing_needs_a_library_folder_for_the_copy() {
     let library = library();

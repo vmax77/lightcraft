@@ -192,3 +192,52 @@ fn real_library_shows_when_named() {
     }
     eprintln!("{} albums", s.photos_browse.as_ref().unwrap().albums.len());
 }
+
+/// Photos can keep a JPEG of a photo imported as `IMG_1234.HEIC`: the proxy is named after the
+/// file Photos keeps, so its format, and the copy made to edit it, say what the file is.
+#[test]
+fn a_proxy_is_named_with_the_extension_of_the_file_photos_keeps() {
+    assert_eq!(proxy_file_name(Some("IMG_1234.HEIC"), Some("U.jpeg"), "U"), "IMG_1234.jpeg");
+    assert_eq!(proxy_file_name(Some("IMG_1234.HEIC"), Some("U.heic"), "U"), "IMG_1234.HEIC", "same type: the imported name");
+    assert_eq!(proxy_file_name(Some("Scan"), Some("U.png"), "U"), "Scan.png");
+    assert_eq!(proxy_file_name(Some("IMG_1234.HEIC"), None, "U"), "IMG_1234.HEIC");
+    assert_eq!(proxy_file_name(None, Some("U.jpeg"), "U"), "U.jpeg");
+    assert_eq!(proxy_file_name(None, None, "U"), "U");
+
+    // in a library: F was imported as IMG_0006.HEIC, and Photos keeps a JPEG of it
+    const ASSET_F: &str = "0A1B2C3D-0000-4000-8000-000000000006";
+    let mut tables = fixture::photos_tables(Layout::Photos6);
+    let assets: &mut Table = tables.iter_mut().find(|t| t.name == "ZASSET").unwrap();
+    assets.row(&[
+        ("Z_PK", V::Int(6)),
+        ("ZUUID", t(ASSET_F)),
+        ("ZFILENAME", t(&format!("{ASSET_F}.jpeg"))),
+        ("ZDIRECTORY", t("0")),
+        ("ZUNIFORMTYPEIDENTIFIER", t("public.jpeg")),
+        ("ZADDITIONALATTRIBUTES", V::Int(16)),
+    ]);
+    let attributes: &mut Table = tables.iter_mut().find(|t| t.name == "ZADDITIONALASSETATTRIBUTES").unwrap();
+    attributes.row(&[("Z_PK", V::Int(16)), ("ZASSET", V::Int(6)), ("ZORIGINALFILENAME", t("IMG_0006.HEIC"))]);
+    let library = Library::new(&tables);
+    let mut s = Session::new();
+    // a proxy made before names took the kept file's extension
+    let stale = PhotosItem {
+        uuid: ASSET_F.into(),
+        file_name: "IMG_0006.HEIC".into(),
+        format: "HEIC".into(),
+        kind: MediaKind::Image,
+        width: 0,
+        height: 0,
+        captured: None,
+        file_size: 0,
+        original: Some(library.root.join("originals").join("0").join(format!("{ASSET_F}.jpeg")).to_string_lossy().into()),
+    };
+    let at = library.root.to_string_lossy().into_owned();
+    s.show_photos(PhotosRead { library: at, view: PhotosView::All, items: vec![stale], albums: Vec::new(), warnings: Vec::new() }).unwrap();
+    let r = show(&mut s, &library, json!({}));
+    assert_eq!((r["new"].as_u64(), r["updated"].as_u64()), (Some(1), Some(1)), "A is new, F renamed: {r}");
+    let f = proxy_of(&s, ASSET_F);
+    assert_eq!((f.file_name.as_str(), f.format.as_str()), ("IMG_0006.jpeg", "JPEG"));
+    let a = proxy_of(&s, ASSET_A);
+    assert_eq!((a.file_name.as_str(), a.format.as_str()), ("IMG_0001.HEIC", "HEIC"), "a HEIC kept as HEIC keeps its name");
+}

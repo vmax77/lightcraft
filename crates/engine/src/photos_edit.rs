@@ -155,12 +155,15 @@ impl Session {
                 .and_then(|o| Path::new(o).file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| format!("{uuid}.jpg"));
+            // with the extension of the file that is copied, so a JPEG Photos keeps of a photo
+            // imported as `.HEIC` isn't named `.HEIC` (a proxy made before its name said so)
+            let shown = crate::photos_browse::proxy_file_name(Some(&p.file_name), original.is_some().then_some(fallback.as_str()), uuid);
             out.push(PhotosCopy {
                 id,
                 link: PhotosLink { library: library.clone(), uuid: uuid.clone() },
                 original: original.as_deref().map(PathBuf::from),
                 size: p.file_size,
-                file_name: safe_name(&p.file_name, &fallback),
+                file_name: safe_name(&shown, &fallback),
                 dir: lib.originals_dir().join(COPY_FOLDER),
             });
         }
