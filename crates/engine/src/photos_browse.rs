@@ -222,12 +222,20 @@ impl Session {
     /// that changed, and switch to the [`LibrarySource::ApplePhotos`] view. Proxies are Local
     /// records, journaled but not an undo step, like a browsed folder's.
     pub fn show_photos(&mut self, read: PhotosRead) -> Result<Value> {
+        // by asset: its proxy and the original it was linked to, or (the original's path
+        // being `None` there) the copy made of it to edit it, which is shown in its place
         let mut known: HashMap<String, (PhotoId, Option<String>)> = HashMap::new();
+        let mut copied: HashMap<String, PhotoId> = HashMap::new();
         for p in self.catalog.photos() {
-            if let Source::ApplePhotos { library, uuid, original } = &p.source
-                && *library == read.library
-            {
-                known.insert(uuid.clone(), (p.id, original.clone()));
+            match (&p.source, &p.from_photos) {
+                (Source::ApplePhotos { library, uuid, original }, _) if *library == read.library => {
+                    known.insert(uuid.clone(), (p.id, original.clone()));
+                }
+                // a copy in Recently Deleted gives way to the asset's proxy
+                (_, Some(link)) if link.library == read.library && !p.deleted => {
+                    copied.insert(link.uuid.clone(), p.id);
+                }
+                _ => {}
             }
         }
         let now = (self.clock)();
@@ -236,6 +244,10 @@ impl Session {
         let mut seen = HashSet::new();
         let (mut added, mut updated) = (0usize, 0usize);
         for item in read.items.iter().filter(|i| seen.insert(i.uuid.as_str())) {
+            if let Some(id) = copied.get(&item.uuid) {
+                members.push(*id);
+                continue;
+            }
             let source = Source::ApplePhotos { library: read.library.clone(), uuid: item.uuid.clone(), original: item.original.clone() };
             match known.get(&item.uuid) {
                 Some((id, original)) => {

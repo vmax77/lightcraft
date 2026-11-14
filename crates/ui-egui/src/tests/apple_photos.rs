@@ -111,3 +111,66 @@ fn a_view_is_read_in_the_background_and_a_failed_read_says_why() {
     assert_eq!(h.app.session.photos_browse.as_ref().map(|b| b.view.clone()), Some(PhotosView::All), "the view shown stays");
     assert!(h.app.session.activity.list().iter().all(|t| t.kind != "applePhotos"), "its activity row went");
 }
+
+#[test]
+fn opening_the_edit_tools_on_a_photos_item_copies_it_into_the_library() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-photos-edit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let package = dir.join("Test.photoslibrary");
+    let original = package.join("originals").join("0").join("U1.jpg");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    std::fs::write(&original, b"not really a jpeg, but copied byte for byte").unwrap();
+    let mut session = lightcraft_engine::Session::new().with_fs();
+    session.open_library(dir.join("lib"), false).unwrap();
+    let services = Services { png: None, local_places: Some(Vec::new()), ..Default::default() };
+    let mut h = Headless::new(LightcraftApp::new(session, services), [1200.0, 1000.0], 1.0);
+    let item = |uuid: &str, original: Option<String>| PhotosItem {
+        uuid: uuid.into(),
+        file_name: format!("{uuid}.JPG"),
+        format: "JPG".into(),
+        kind: MediaKind::Image,
+        width: 30,
+        height: 20,
+        captured: None,
+        file_size: 10,
+        original,
+    };
+    let library = package.to_string_lossy().into_owned();
+    let read = PhotosRead {
+        library: library.clone(),
+        view: PhotosView::All,
+        items: vec![item("U1", Some(original.to_string_lossy().into())), item("U2", None)],
+        albums: Vec::new(),
+        warnings: Vec::new(),
+    };
+    h.app.session.show_photos(read).unwrap();
+    let id_of = |h: &Headless, uuid: &str| {
+        h.app.session.catalog.photos().find(|p| matches!(&p.source, lightcraft_catalog::Source::ApplePhotos { uuid: u, .. } if u == uuid)).unwrap().id
+    };
+    let (u1, u2) = (id_of(&h, "U1"), id_of(&h, "U2"));
+
+    // browsing a Photos item copies nothing
+    h.app.session.execute("library.select", &json!({"ids": [u1.0]})).unwrap();
+    h.request("ui.set", json!({"view": "detail"}), T);
+    h.settle(SETTLE);
+    assert!(!h.app.photos_edit.busy());
+    // the Edit tools open on it: copied in the background, with a row in the activity stack
+    h.app.ui.right = crate::state::RightPanel::Edit;
+    h.step();
+    let list = h.app.session.activity.list();
+    assert!(!h.app.photos_edit.busy() || list.iter().any(|t| t.kind == "applePhotosCopy"), "{list:?}");
+    h.settle(SETTLE);
+    let p = h.app.session.catalog.photo(u1).unwrap().clone();
+    let lightcraft_catalog::Source::File { path } = &p.source else { panic!("not copied: {:?}", p.source) };
+    assert_eq!(std::fs::read(path).unwrap(), std::fs::read(&original).unwrap());
+    assert!(p.in_library() && p.from_photos.as_ref().is_some_and(|l| l.uuid == "U1" && l.library == library));
+    assert!(h.app.session.activity.list().iter().all(|t| t.kind != "applePhotosCopy"), "its row went");
+
+    // one only in iCloud says so once, and stays as it is
+    h.app.session.execute("library.select", &json!({"ids": [u2.0]})).unwrap();
+    h.settle(SETTLE);
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    assert!(toast.contains("iCloud"), "{toast:?}");
+    assert!(!h.app.session.catalog.photo(u2).unwrap().in_library());
+    let _ = std::fs::remove_dir_all(&dir);
+}

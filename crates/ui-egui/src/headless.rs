@@ -396,6 +396,7 @@ impl Headless {
             || self.app.merge.busy()
             || self.app.scan.is_some()
             || self.app.photos_task.is_some()
+            || self.app.photos_edit.busy()
             || self.app.sync.is_some()
             || self.app.sync_run.is_some()
             || self.app.import.is_some()

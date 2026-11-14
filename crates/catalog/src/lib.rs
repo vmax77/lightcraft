@@ -238,6 +238,11 @@ pub enum Op {
         id: PhotoId,
         wb: Option<(f64, f64)>,
     },
+    /// Link a photo to the Apple Photos asset it was copied from, or unlink it (issue #1622).
+    SetFromPhotos {
+        id: PhotoId,
+        link: Option<PhotosLink>,
+    },
     /// The name shown for a colour label (`None` = its colour's name).
     SetLabelName {
         label: ColorLabel,
@@ -815,9 +820,12 @@ impl Catalog {
                 self.changes.now = Aspects::ALL;
                 self.touch(*id);
             }
-            Op::SetDeleted { .. } | Op::SetLocal { .. } | Op::SetContent { .. } | Op::SetEmbeddedLens { .. } | Op::SetAsShotWb { .. } => {
-                self.changes.now = Aspects::ALL
-            }
+            Op::SetDeleted { .. }
+            | Op::SetLocal { .. }
+            | Op::SetContent { .. }
+            | Op::SetEmbeddedLens { .. }
+            | Op::SetAsShotWb { .. }
+            | Op::SetFromPhotos { .. } => self.changes.now = Aspects::ALL,
             Op::SetRating { .. } => self.changes.now = Aspects::RATING,
             Op::SetFlag { .. } => self.changes.now = Aspects::FLAG,
             Op::SetLabel { .. } => self.changes.now = Aspects::LABEL,
@@ -1088,6 +1096,10 @@ impl Catalog {
             Op::SetEmbeddedLens { id, lens } => {
                 let p = self.photo_mut(id)?;
                 Op::SetEmbeddedLens { id, lens: std::mem::replace(&mut p.embedded_lens, lens.map(|l| *l)).map(Box::new) }
+            }
+            Op::SetFromPhotos { id, link } => {
+                let p = self.photo_mut(id)?;
+                Op::SetFromPhotos { id, link: std::mem::replace(&mut p.from_photos, link) }
             }
             Op::SetAsShotWb { id, wb } => {
                 if wb.is_some_and(|(t, tint)| !(t.is_finite() && tint.is_finite())) {
@@ -1377,6 +1389,7 @@ fn changes_what_albums_test(op: &Op) -> bool {
         | Op::SetContent { .. }
         | Op::SetEmbeddedLens { .. }
         | Op::SetAsShotWb { .. }
+        | Op::SetFromPhotos { .. }
         | Op::SetRating { .. }
         | Op::SetFlag { .. }
         | Op::SetLabel { .. }

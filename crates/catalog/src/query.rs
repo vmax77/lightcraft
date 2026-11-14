@@ -72,7 +72,8 @@ pub struct Filter {
     pub folder: Option<String>,
     pub subfolders: bool,
     /// An Apple Photos library (its `.photoslibrary` path): only the proxies of its assets
-    /// ([`crate::Source::ApplePhotos`]), which no other view shows.
+    /// ([`crate::Source::ApplePhotos`]), which no other view shows, and the photos copied from
+    /// its assets ([`crate::Photo::from_photos`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apple_photos: Option<String>,
     /// Smart-album rules (all / any / none, nested groups; see [`crate::rules`]).
@@ -404,7 +405,12 @@ impl Filter {
             return false;
         }
         if let Some(library) = &self.apple_photos {
-            let crate::Source::ApplePhotos { library: of, .. } = &p.source else { return false };
+            // the library's proxies, and the copies made of its assets to edit them
+            let of = match (&p.source, &p.from_photos) {
+                (crate::Source::ApplePhotos { library: of, .. }, _) => of,
+                (_, Some(link)) => &link.library,
+                _ => return false,
+            };
             if of != library {
                 return false;
             }

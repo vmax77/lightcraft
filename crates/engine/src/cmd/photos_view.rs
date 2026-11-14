@@ -43,6 +43,15 @@ fn libraries(_: &mut Session, _: &Value) -> crate::Result<Value> {
     Ok(json!({"libraries": [], "default": null}))
 }
 
+/// Make each Apple Photos item among the targets a library photo of its own, from a verified
+/// copy of its original (see [`crate::photos_edit`]).
+fn edit(s: &mut Session, p: &Value) -> crate::Result<Value> {
+    const C: &str = "applePhotos.edit";
+    let ids = s.targets(p).map_err(|e| bad(C, e.to_string()))?;
+    let done = s.edit_photos_items(&ids).map_err(|e| bad(C, e.to_string()))?;
+    Ok(json!({"copied": done.iter().map(|(id, path)| json!({"id": id.0, "path": path.to_string_lossy()})).collect::<Vec<_>>()}))
+}
+
 fn albums(s: &mut Session, _: &Value) -> crate::Result<Value> {
     let browse = s.photos_browse.as_ref();
     Ok(json!({
@@ -71,6 +80,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{library?: path to a .photoslibrary (default: the one browsed, else ~/Pictures/Photos Library.photoslibrary), view?: `all` | `favourites`, album?: uuid} — show the library's photos in the grid without adding them: read only, nothing is written in the library; hidden and recently deleted ones are left out → {library, view, photos, new, updated, warnings}",
             always,
             show
+        ),
+        cmd!(
+            "applePhotos.edit",
+            "Edit Apple Photos Item",
+            [],
+            None,
+            "{ids?: photo ids (default: the selection)} — make each Apple Photos item a library photo to edit: its original is copied into the library's Originals/From Apple Photos/ and compared byte for byte, then the photo points at the copy, keeping its ratings and edits; nothing is written in the Photos library. Others are left as they are. An original only in iCloud is an error → {copied: [{id, path}]}",
+            always,
+            edit
         ),
         cmd!(
             query "applePhotos.albums",

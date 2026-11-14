@@ -338,6 +338,19 @@ pub struct Photo {
     /// whether the user changed anything since (see [`crate::local`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_baseline: Option<u64>,
+    /// A copy of an Apple Photos original, made to edit it (issue #1622): the asset it came from.
+    /// Browsing that library shows this photo in the asset's place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_photos: Option<PhotosLink>,
+}
+
+/// The Apple Photos asset a library photo was copied from (see [`Photo::from_photos`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PhotosLink {
+    /// The `.photoslibrary` package.
+    pub library: String,
+    /// Photos' id for the asset.
+    pub uuid: String,
 }
 
 /// What assisted culling measured on a photo.
@@ -437,6 +450,7 @@ impl Photo {
             preview_only: None,
             preview_checked: String::new(),
             local_baseline: None,
+            from_photos: None,
         }
     }
     /// Sets [`Photo::preview_only`] as this build decided it, with its stamp.

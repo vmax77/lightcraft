@@ -341,7 +341,8 @@ impl Op {
             | Op::Relink { id, .. }
             | Op::SetContent { id, .. }
             | Op::SetEmbeddedLens { id, .. }
-            | Op::SetAsShotWb { id, .. } => out(*id),
+            | Op::SetAsShotWb { id, .. }
+            | Op::SetFromPhotos { id, .. } => out(*id),
             Op::AddAlbum { album } => {
                 album.photos.iter().for_each(|p| out(*p));
                 album.cover.into_iter().for_each(&mut *out);

@@ -1320,6 +1320,8 @@ fn ui_commands_10(app: &mut LightcraftApp, ctx: &egui::Context, id: &str, p: &Va
             // read on a worker (a large library takes a moment); the view switches when it is read
             crate::photos_view::start(app, p)
         }
+        // copied on a worker; the photo becomes the copy when it has been made and checked
+        "applePhotos.edit" => crate::photos_edit::start(app, p),
         "library.browse" if !cfg!(target_arch = "wasm32") => {
             if crate::lightroom_import::is_running(app) {
                 return Some(Err("finish Lightroom catalog import before browsing folders".into()));

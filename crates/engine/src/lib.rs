@@ -68,6 +68,7 @@ pub mod open_path;
 pub mod originals;
 mod pdf;
 pub mod photos_browse;
+pub mod photos_edit;
 pub mod prep;
 pub mod preset_import;
 pub mod preset_luminar;

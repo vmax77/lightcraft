@@ -113,6 +113,7 @@ impl LightcraftApp {
             import: None,
             scan: None,
             photos_task: None,
+            photos_edit: Default::default(),
             scans_stopping: Default::default(),
             waiting_import: Default::default(),
             sync: None,

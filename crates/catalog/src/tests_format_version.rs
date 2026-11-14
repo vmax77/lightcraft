@@ -236,11 +236,12 @@ fn op_variants_are_versioned() {
             Op::SetFolderRecord { .. } => 6,
             Op::SetAsShotWb { .. } => 7,
             Op::SetHistoryCursor { .. } => 8,
+            Op::SetFromPhotos { .. } => 14,
         }
     }
-    /// v14: `Source::ApplePhotos` (Apple Photos proxies, #1622); v13: Lens Blur in develop settings and mask adjustments (v12: `Catalog.grids` and `SegMask.grid`; v11: `EmbeddedLens.source`;
+    /// v14: `Source::ApplePhotos` and `Photo.from_photos` (Apple Photos proxies and copies, #1622); v13: Lens Blur in develop settings and mask adjustments (v12: `Catalog.grids` and `SegMask.grid`; v11: `EmbeddedLens.source`;
     /// v10: `Mask.on_photo`; v9: `Photo.preview_checked` and `Op::SetContent.preview_checked`).
     const NEWEST_FIELDS: u32 = 14;
-    let newest = since(&Op::SetHistoryCursor { id: PhotoId(1), cursor: None });
+    let newest = since(&Op::SetFromPhotos { id: PhotoId(1), link: None });
     assert_eq!(newest.max(NEWEST_FIELDS), VERSION, "the newest op's or fields' version must be the current format version");
 }
