@@ -291,6 +291,14 @@ fn exec(h: &mut Headless, command: &str, params: serde_json::Value) -> serde_jso
     r["result"].clone()
 }
 
+/// Hide the Apple Photos section where this build has it (macOS); elsewhere it is never drawn,
+/// and `view.sidebarSection` refuses a section the build lacks.
+fn hide_apple_photos(h: &mut Headless) {
+    if crate::sidebar::SidebarSection::ApplePhotos.available() {
+        exec(h, "view.sidebarSection", json!({"section": "applePhotos", "show": false}));
+    }
+}
+
 /// The View ▸ Sidebar Sections items: (section id or command, checked).
 fn sidebar_menu_items(h: &Headless) -> Vec<(String, Option<bool>)> {
     use crate::menubar::MenuNode;
@@ -463,7 +471,7 @@ fn dragging_a_header_moves_its_section() {
     // folders too: photos imported from a folder
     let mut h = folders_app_sized(&["/pics/trip/a.jpg"], [1400.0, 1400.0]);
     // (Apple Photos is on macOS only: taken out, so the same sections are there everywhere)
-    exec(&mut h, "view.sidebarSection", json!({"section": "applePhotos", "show": false}));
+    hide_apple_photos(&mut h);
     let usual = sections_drawn(&h);
     let with_local = usual.contains(&"local".to_string());
     let listed = |ids: &[&str]| ids.iter().filter(|s| with_local || **s != "local").map(|s| s.to_string()).collect::<Vec<_>>();
@@ -574,7 +582,7 @@ fn a_section_moves_up_and_down_from_its_menu() {
     // (Local is not on every platform: taken out, so the same sections are there everywhere)
     exec(&mut h, "view.sidebarSection", json!({"section": "local", "show": false}));
     exec(&mut h, "view.sidebarSection", json!({"section": "folders", "show": false}));
-    exec(&mut h, "view.sidebarSection", json!({"section": "applePhotos", "show": false}));
+    hide_apple_photos(&mut h);
     assert_eq!(sections_drawn(&h), ["albums", "byDate", "keywords"]);
     right_click(&mut h, "sidebarSection:keywords");
     click(&mut h, "sidebarMenu:moveUp");
