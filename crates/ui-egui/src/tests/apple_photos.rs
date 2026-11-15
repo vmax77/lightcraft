@@ -183,3 +183,61 @@ fn the_first_edit_of_a_photos_item_copies_it_into_the_library() {
     assert!(!h.app.session.catalog.photo(u2).unwrap().in_library());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Saving an edit back to Photos runs on a worker under a row in the activity stack, and says
+/// how it went (here, off macOS or without Photos access, why it couldn't).
+#[test]
+fn saving_an_edit_to_photos_runs_in_the_background_and_says_how_it_went() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-photos-save-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let package = dir.join("Test.photoslibrary");
+    let original = package.join("originals").join("0").join("U1.jpg");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    let pixels = lightcraft_raster::Rgba8::from_bytes(4, 3, &[128u8; 4 * 3 * 4]).unwrap();
+    let jpeg = lightcraft_engine::export::encode_image(&pixels, &lightcraft_engine::export::ExportOptions::default()).unwrap();
+    std::fs::write(&original, &jpeg).unwrap();
+    let mut session = lightcraft_engine::Session::new().with_fs();
+    session.open_library(dir.join("lib"), false).unwrap();
+    let services = Services { png: None, local_places: Some(Vec::new()), ..Default::default() };
+    let mut h = Headless::new(LightcraftApp::new(session, services), [1200.0, 1000.0], 1.0);
+    let read = PhotosRead {
+        library: package.to_string_lossy().into_owned(),
+        view: PhotosView::All,
+        items: vec![PhotosItem {
+            uuid: "U1".into(),
+            file_name: "U1.JPG".into(),
+            format: "JPG".into(),
+            kind: MediaKind::Image,
+            width: 4,
+            height: 3,
+            captured: None,
+            file_size: jpeg.len() as u64,
+            original: Some(original.to_string_lossy().into()),
+        }],
+        albums: Vec::new(),
+        warnings: Vec::new(),
+    };
+    h.app.session.show_photos(read).unwrap();
+    let u1 = h.app.session.catalog.photos().next().unwrap().id;
+
+    // nothing to save before it has been copied and edited
+    assert!(h.app.run("applePhotos.saveEdit", json!({"ids": [u1.0]})).unwrap_err().contains("not copied from Apple Photos"));
+    assert!(!h.app.photos_save.busy());
+
+    h.app.session.execute("library.select", &json!({"ids": [u1.0]})).unwrap();
+    h.app.session.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
+    let mut no_fetch = |_: &str, _: &mut dyn std::io::Write| -> Result<u64, String> { Err("on this Mac".into()) };
+    h.app.session.edit_photos_items(&[u1], &mut no_fetch).unwrap();
+
+    let r = h.app.run("applePhotos.saveEdit", json!({"ids": [u1.0]})).unwrap();
+    assert_eq!(r["queued"], json!([u1.0]), "{r}");
+    let list = h.app.session.activity.list();
+    assert!(list.iter().any(|t| t.kind == "applePhotosSave"), "{list:?}");
+    h.settle(SETTLE);
+    assert!(!h.app.photos_save.busy());
+    assert!(h.app.session.activity.list().iter().all(|t| t.kind != "applePhotosSave"), "its row went");
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
+    assert!(toast.contains(why), "{toast}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

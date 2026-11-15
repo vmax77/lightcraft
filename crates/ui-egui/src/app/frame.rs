@@ -80,6 +80,7 @@ impl LightcraftApp {
         import::poll_scan(self, ctx);
         crate::photos_view::poll(self, ctx);
         crate::photos_edit::poll(self, ctx);
+        crate::photos_save::poll(self, ctx);
         sync::poll(self, ctx);
         sync::poll_run(self, ctx);
         // Import commits batches and must not run twice in one host frame. The first layout pass

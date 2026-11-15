@@ -58,6 +58,24 @@ fn edit(s: &mut Session, p: &Value) -> crate::Result<Value> {
     Ok(json!({"copied": done.iter().map(|(id, path)| json!({"id": id.0, "path": path.to_string_lossy()})).collect::<Vec<_>>()}))
 }
 
+/// Save the edit of each target photo copied from Photos back onto its asset in the System Photo
+/// Library (see [`crate::photos_save`]).
+fn save_edit(s: &mut Session, p: &Value) -> crate::Result<Value> {
+    const C: &str = "applePhotos.saveEdit";
+    let ids = s.targets(p).map_err(|e| bad(C, e.to_string()))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (cancel, mut progress) = (std::sync::atomic::AtomicBool::new(false), |_: f64| {});
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut save = crate::photos_save::photokit_save(&cancel, &mut progress);
+    #[cfg(target_arch = "wasm32")]
+    let mut save = |_: &str, _: &std::path::Path, _: &[u8]| -> Result<(), String> { Err("Apple Photos is only available on macOS".into()) };
+    let (saved, skipped) = s.save_photos_edits(&ids, &mut save).map_err(|e| bad(C, e.to_string()))?;
+    Ok(json!({
+        "saved": saved.iter().map(|id| id.0).collect::<Vec<_>>(),
+        "skipped": skipped.iter().map(|k| json!({"id": k.id.0, "why": k.why})).collect::<Vec<_>>(),
+    }))
+}
+
 fn albums(s: &mut Session, _: &Value) -> crate::Result<Value> {
     let browse = s.photos_browse.as_ref();
     Ok(json!({
@@ -95,6 +113,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{ids?: photo ids (default: the selection)} — make each Apple Photos item a library photo to edit: its original is copied into the library's Originals/From Apple Photos/ and compared byte for byte, then the photo points at the copy, keeping its ratings and edits; nothing is written in the Photos library. An original only in iCloud is downloaded first (System Photo Library, macOS app only). Others are left as they are → {copied: [{id, path}]}",
             always,
             edit
+        ),
+        cmd!(
+            "applePhotos.saveEdit",
+            "Save Edit to Apple Photos",
+            ["Photo"],
+            None,
+            "{ids?: photo ids (default: the selection)} — for each edited photo that was copied from Apple Photos to be edited, render it (full-size JPEG, Display P3) and put it on the asset it came from, in place of what Photos showed; Photos keeps the original (Revert to Original) and LightCraft's settings go with the edit. System Photo Library only, macOS app only; macOS asks to allow each change. Others are skipped → {saved: [id], skipped: [{id, why}]}",
+            always,
+            save_edit
         ),
         cmd!(
             query "applePhotos.albums",

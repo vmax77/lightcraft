@@ -69,11 +69,11 @@
        needs the apple-events entitlement in entitlements.plist). -->
   <key>NSAppleEventsUsageDescription</key>
   <string>LightCraft asks Photos to import the photos you export when you choose Add to Apple Photos in the Export dialog.</string>
-  <!-- Shown by macOS when LightCraft first asks to read the System Photo Library through PhotoKit
+  <!-- Shown by macOS when LightCraft first asks to read (or save an edit to) the System Photo Library through PhotoKit
        (crates/photokit; needs the photos-library entitlement in entitlements.plist). Without this
        key macOS terminates the app on its first PhotoKit call, so crates/photokit checks for it. -->
   <key>NSPhotoLibraryUsageDescription</key>
-  <string>LightCraft shows your Photos library so you can browse, import and edit your photos. It never changes the library.</string>
+  <string>LightCraft shows your Photos library so you can browse, import and edit your photos. It changes a photo in the library only when you choose Save Edit to Apple Photos, and macOS asks you first.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright © the LightCraft authors. MIT OR Apache-2.0.</string>
 

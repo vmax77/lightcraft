@@ -7,12 +7,12 @@ use crate::Session;
 use crate::apple_photos_library::fixture::{self, ASSET_A, JUNE_2021, Layout, Library, Table, V, t};
 use crate::tests::xmp::temp_dir;
 
-const ASSET_D: &str = "0A1B2C3D-0000-4000-8000-000000000004";
+pub(crate) const ASSET_D: &str = "0A1B2C3D-0000-4000-8000-000000000004";
 const ASSET_E: &str = "0A1B2C3D-0000-4000-8000-000000000005";
 
 /// A Photos library (fixture) with A (on this Mac, no file), D (a JPEG original written at
 /// `originals/0/<D>.jpg`) and E (only in iCloud).
-fn library() -> Library {
+pub(crate) fn library() -> Library {
     let mut tables = fixture::photos_tables(Layout::Photos6);
     let assets: &mut Table = tables.iter_mut().find(|t| t.name == "ZASSET").unwrap();
     assets.row(&[
@@ -43,7 +43,7 @@ fn library() -> Library {
 }
 
 /// A session with a library on disk in `tag`'s temp folder, browsing `library`'s All Photos.
-fn session(tag: &str, library: &Library) -> (Session, std::path::PathBuf) {
+pub(crate) fn session(tag: &str, library: &Library) -> (Session, std::path::PathBuf) {
     let lib = temp_dir(tag);
     let mut s = Session::new().with_fs();
     s.open_library(&lib, false).unwrap();
@@ -51,11 +51,11 @@ fn session(tag: &str, library: &Library) -> (Session, std::path::PathBuf) {
     (s, lib)
 }
 
-fn proxy(s: &Session, uuid: &str) -> PhotoId {
+pub(crate) fn proxy(s: &Session, uuid: &str) -> PhotoId {
     s.catalog.photos().find(|p| matches!(&p.source, Source::ApplePhotos { uuid: u, .. } if u == uuid)).unwrap().id
 }
 
-fn no_fetch(_: &str, _: &mut dyn std::io::Write) -> Result<u64, String> {
+pub(crate) fn no_fetch(_: &str, _: &mut dyn std::io::Write) -> Result<u64, String> {
     panic!("nothing is fetched for an original on this Mac")
 }
 

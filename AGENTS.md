@@ -91,7 +91,7 @@ of it.
 - **`unsafe` lives only in `crates/sysmem`** (one FFI call, `malloc_zone_pressure_relief`, that returns freed
   allocator pages to macOS after raw decodes), **`crates/wincolor`** (Win32 calls that read the colour profile
   Windows assigns to the monitor showing the window, and whether Windows colour-manages that monitor itself)
-  **and `crates/photokit`** (PhotoKit calls through `objc2` that read the System Photo Library, after checking
+  **and `crates/photokit`** (PhotoKit calls through `objc2` that read the System Photo Library and save edits to its photos, after checking
   that the app has a Photos usage description, without which macOS would terminate it). Every
   other production crate root has `#![forbid(unsafe_code)]`. A new unsafe need goes in an isolated, well-tested helper
   crate like them: `// SAFETY:` on every block, a safe API, a safe fallback where possible, and a line here naming it.

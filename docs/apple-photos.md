@@ -168,3 +168,42 @@ Report the toast or JSON, and the macOS and Photos versions.
 - One import runs (or is reserved by an export) at a time; a session remembers its last 32.
 - Quitting the desktop app while Photos is importing doesn't wait for it: Photos may still finish the import,
   but LightCraft won't show the outcome.
+
+## Saving an edit back to Photos
+
+A photo copied out of Photos to be edited (issue #1622: the first edit of an item from the sidebar's Apple
+Photos section) can put its edit back on the asset it came from: **Photo ▸ Save Edit to Apple Photos**
+(`applePhotos.saveEdit`). Photos then shows the edited photo in place of the asset's current version, in every
+album and on every device that syncs with iCloud Photos. Photos keeps the original: **Image ▸ Revert to
+Original** in Photos brings it back. Unlike Add to Apple Photos, nothing new is added to the library.
+
+How it works (`crates/engine/src/photos_save.rs`, `crates/photokit`):
+
+1. The photo is rendered at full size as a JPEG (quality 95, Display P3, its metadata, upright) to a temporary
+   file, on a worker under a row in the activity stack.
+2. PhotoKit prepares the asset for editing (`requestContentEditingInput`; it downloads the asset from iCloud
+   first when it isn't on this Mac, shown as progress in the row, and ✕ stops it).
+3. The JPEG is copied to where PhotoKit wants it, with LightCraft's develop settings as the edit's adjustment
+   data (format `ai.storyteller.lightcraft.develop`, version 1; settings over 1 MB are left out), and the change
+   is committed (`performChangesAndWait`). macOS asks the user to allow LightCraft to modify the photo.
+4. The temporary file is removed, whatever happened.
+
+Only the System Photo Library can be changed, only in the packaged macOS app (PhotoKit needs its
+`NSPhotoLibraryUsageDescription` and the photos-library entitlement), and only photos: a video, or a photo
+Photos won't let apps edit (a shared album's), is refused. Photos that weren't copied from Photos, or that have
+no edits, are skipped and said why. The asset is found by its UUID, so a library that is a copy of the System
+Photo Library saves to the System Photo Library's asset.
+
+Not yet: the edit is not read back (a later edit in Photos, or another app's, is not seen by LightCraft, and
+saving again replaces it, built from the original); no HDR (gain map) rendition; Live Photos keep their motion
+unedited; libraries other than the System Photo Library.
+
+### Manual test (macOS, packaged app)
+
+1. In the sidebar's Apple Photos section, open the System Photo Library and pick a photo. Raise its exposure in
+   the Edit tools: an activity row copies it into the library.
+2. Photo ▸ Save Edit to Apple Photos. Allow access to Photos if asked, then allow the change.
+3. The toast says *Saved to Apple Photos*. In Photos, the photo shows the edit and has **Revert to Original**.
+4. Revert in Photos, then save again from LightCraft: the edit comes back.
+5. Deny the change when macOS asks: the toast says LightCraft was not allowed, and Photos is unchanged.
+6. Pick a photo only in iCloud (Optimize Mac Storage), edit and save: the row shows the download, ✕ stops it.
