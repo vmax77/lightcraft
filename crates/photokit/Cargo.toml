@@ -3,7 +3,7 @@ name = "lightcraft-photokit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "LightCraft photokit (L0): read the System Photo Library through Apple's PhotoKit. One of the crates allowed `unsafe` (Objective-C calls)."
+description = "LightCraft photokit (L0): read the System Photo Library through Apple's PhotoKit, and save edits to its photos. One of the crates allowed `unsafe` (Objective-C calls)."
 
 # The workspace lints: they deny `unsafe_code` (deny, not forbid), which the `imp` module in
 # src/lib.rs allows for its PhotoKit calls; every other crate root has `#![forbid(unsafe_code)]`. See
@@ -11,7 +11,7 @@ description = "LightCraft photokit (L0): read the System Photo Library through A
 [lints]
 workspace = true
 
-# objc2-photos and objc2-core-location are `Zlib OR Apache-2.0 OR MIT`, used under MIT (as
+# objc2-photos, objc2-core-location and dispatch2 are `Zlib OR Apache-2.0 OR MIT`, used under MIT (as
 # objc2-app-kit already is); objc2, objc2-foundation and block2 are MIT.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
@@ -19,11 +19,18 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-photos = { version = "0.3", default-features = false, features = [
     "std",
     "block2",
+    "dispatch2",
     "objc2-core-location",
+    "PHAdjustmentData",
     "PHAsset",
+    "PHAssetChangeRequest",
     "PHAssetResource",
     "PHAssetResourceManager",
+    "PHChangeRequest",
     "PHCollection",
+    "PHContentEditingInput",
+    "PHContentEditingOutput",
+    "PHError",
     "PHFetchOptions",
     "PHFetchResult",
     "PHObject",

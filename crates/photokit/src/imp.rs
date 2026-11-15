@@ -413,3 +413,153 @@ pub fn download_original(
         }
     }
 }
+
+/// A content editing output handed from PhotoKit's completion handler to the waiting thread.
+struct SendOutput(Retained<objc2_photos::PHContentEditingOutput>);
+
+// SAFETY: the output is made in the completion handler and then used by one thread only (the one
+// waiting in `save_edit`); Apple's documentation has apps fill an output on a background queue.
+unsafe impl Send for SendOutput {}
+
+/// What the editing-input request's handlers pass to the waiting thread.
+enum Prepared {
+    Progress(f64),
+    Done(Result<SendOutput, String>),
+}
+
+/// PhotoKit's reason in a content-editing-input `info` dictionary.
+fn input_error(info: &objc2_foundation::NSDictionary) -> String {
+    // SAFETY: the key is the NSString constant PhotoKit declares for this dictionary; the value
+    // under it, when present, is an NSError (checked by the downcast).
+    let error = unsafe { info.objectForKey(objc2_photos::PHContentEditingInputErrorKey) };
+    error
+        .as_deref()
+        .and_then(|e| e.downcast_ref::<objc2_foundation::NSError>())
+        .map(|e| e.localizedDescription().to_string())
+        .unwrap_or_else(|| "no reason given".into())
+}
+
+pub fn save_edit(
+    local_id: &str,
+    rendered: &std::path::Path,
+    adjustment: &super::Adjustment,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<(), super::SaveError> {
+    use super::SaveError;
+    use objc2::AllocAnyThread;
+    use objc2_photos::{
+        PHAdjustmentData, PHAssetChangeRequest, PHAssetEditOperation, PHContentEditingInput, PHContentEditingInputRequestOptions,
+        PHContentEditingOutput,
+    };
+    use std::sync::atomic::Ordering;
+
+    let access = access()?;
+    if !access.can_read() {
+        return Err(PhotoKitError::NotAllowed(access).into());
+    }
+    if objc2::MainThreadMarker::new().is_some() {
+        return Err(SaveError::MainThread);
+    }
+    let ids = NSArray::from_retained_slice(&[NSString::from_str(local_id)]);
+    // SAFETY: a class method taking an array of NSString identifiers and optional options.
+    let found = unsafe { PHAsset::fetchAssetsWithLocalIdentifiers_options(&ids, None) };
+    let asset = each(&found, 0, 1).into_iter().next().ok_or(SaveError::NotFound)?;
+    // SAFETY: getters taking no arguments / an integer enum, returning an enum and a bool.
+    let editable = unsafe { asset.mediaType() == PHAssetMediaType::Image && asset.canPerformEditOperation(PHAssetEditOperation::Content) };
+    if !editable {
+        return Err(SaveError::NotEditable);
+    }
+
+    let (tx, rx) = mpsc::channel::<Prepared>();
+    let on_progress = tx.clone();
+    let progressed = RcBlock::new(move |fraction: std::ffi::c_double, _stop: std::ptr::NonNull<objc2::runtime::Bool>| {
+        let _ = on_progress.send(Prepared::Progress(fraction));
+    });
+    let handler = RcBlock::new(move |input: *mut PHContentEditingInput, info: std::ptr::NonNull<objc2_foundation::NSDictionary>| {
+        // SAFETY: PhotoKit passes a valid input (or nil) and a valid dictionary, both living for the
+        // call; the output made from the input is retained, so it outlives them.
+        let result = match unsafe { input.as_ref() } {
+            Some(input) => Ok(SendOutput(unsafe { PHContentEditingOutput::initWithContentEditingInput(PHContentEditingOutput::alloc(), input) })),
+            None => Err(input_error(unsafe { info.as_ref() })),
+        };
+        let _ = tx.send(Prepared::Done(result));
+    });
+    // SAFETY: `new` makes default options; the setters take a bool and a progress block of the
+    // declared type (`void (^)(double, BOOL *)`), which the options object copies and keeps.
+    let options = unsafe {
+        let options = PHContentEditingInputRequestOptions::new();
+        options.setNetworkAccessAllowed(true);
+        options.setProgressHandler(Some(&progressed));
+        options
+    };
+    // SAFETY: the handler has the block signature the header declares
+    // (`void (^)(PHContentEditingInput *, NSDictionary *)`), PhotoKit copies it before returning,
+    // and it only sends owned values on a channel (a send to a dropped receiver is ignored).
+    let request = unsafe { asset.requestContentEditingInputWithOptions_completionHandler(Some(&options), &handler) };
+
+    const TICK: Duration = Duration::from_millis(200);
+    let mut idle = Duration::ZERO;
+    let output = loop {
+        if cancel.load(Ordering::Relaxed) {
+            // SAFETY: cancels the request this call made, by the id PhotoKit gave it.
+            unsafe { asset.cancelContentEditingInputRequest(request) };
+            return Err(SaveError::Cancelled);
+        }
+        match rx.recv_timeout(TICK) {
+            Ok(Prepared::Progress(fraction)) => {
+                idle = Duration::ZERO;
+                if fraction.is_finite() {
+                    progress(fraction.clamp(0.0, 1.0));
+                }
+            }
+            Ok(Prepared::Done(Ok(output))) => break output.0,
+            Ok(Prepared::Done(Err(why))) => return Err(SaveError::Prepare(why)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                idle += TICK;
+                if idle >= super::PREPARE_IDLE {
+                    // SAFETY: as above.
+                    unsafe { asset.cancelContentEditingInputRequest(request) };
+                    return Err(SaveError::TimedOut);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(SaveError::Prepare("PhotoKit ended the request".into())),
+        }
+    };
+
+    // SAFETY: a getter without arguments returning a non-null file URL inside Photos' editing area.
+    let url = unsafe { output.renderedContentURL() };
+    let target =
+        url.path().map(|p| std::path::PathBuf::from(p.to_string())).ok_or_else(|| SaveError::Write("Photos gave no file to write to".into()))?;
+    std::fs::copy(rendered, &target).map_err(|e| SaveError::Write(e.to_string()))?;
+    // SAFETY: an initializer taking two NSStrings and NSData (copied by the object); the setter takes
+    // the adjustment data the output keeps.
+    unsafe {
+        let data = objc2_foundation::NSData::with_bytes(adjustment.data);
+        let adjustment = PHAdjustmentData::initWithFormatIdentifier_formatVersion_data(
+            PHAdjustmentData::alloc(),
+            &NSString::from_str(adjustment.format),
+            &NSString::from_str(adjustment.version),
+            &data,
+        );
+        output.setAdjustmentData(Some(&adjustment));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(SaveError::Cancelled);
+    }
+    let change = RcBlock::new(move || {
+        // SAFETY: runs inside `performChangesAndWait:`, the only place a change request may be made;
+        // the asset and output are retained by the block.
+        unsafe { PHAssetChangeRequest::changeRequestForAsset(&asset).setContentEditingOutput(Some(&output)) };
+    });
+    // SAFETY: the change block has the declared type (`void (^)(void)`) and is copied by PhotoKit;
+    // this waits on a worker thread (checked above), as the method requires.
+    let done = unsafe { PHPhotoLibrary::sharedPhotoLibrary().performChangesAndWait_error(RcBlock::as_ptr(&change)) };
+    done.map_err(|e| {
+        if e.code() == objc2_photos::PHPhotosError::UserCancelled.0 {
+            SaveError::Declined
+        } else {
+            SaveError::Failed(e.localizedDescription().to_string())
+        }
+    })
+}
