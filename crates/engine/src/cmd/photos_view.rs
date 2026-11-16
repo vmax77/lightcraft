@@ -136,7 +136,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "applePhotos.saveEdit",
             "Save Edit to Apple Photos",
             ["Photo"],
-            None,
+            Some("Cmd+Alt+Shift+P"),
             "{ids?: photo ids (default: the selection)} — for each edited photo that was copied from Apple Photos to be edited, render it (full-size JPEG, Display P3) and put it on the asset it came from, in place of what Photos showed; Photos keeps the original (Revert to Original) and LightCraft's settings go with the edit. System Photo Library only, macOS app only; macOS asks to allow each change. Others are skipped → {saved: [id], skipped: [{id, why}]}",
             always,
             save_edit

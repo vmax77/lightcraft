@@ -181,7 +181,7 @@ LightCraft leaves its metadata alone. Not carried over yet: people, place names 
 
 A photo copied out of Photos to be edited (issue #1622: the first edit of an item from the sidebar's Apple
 Photos section) can put its edit back on the asset it came from: **Photo ▸ Save Edit to Apple Photos**
-(`applePhotos.saveEdit`). Photos then shows the edited photo in place of the asset's current version, in every
+(⌘⌥⇧P / Ctrl+Alt+Shift+P, `applePhotos.saveEdit`). Photos then shows the edited photo in place of the asset's current version, in every
 album and on every device that syncs with iCloud Photos. Photos keeps the original: **Image ▸ Revert to
 Original** in Photos brings it back. Unlike Add to Apple Photos, nothing new is added to the library.
 

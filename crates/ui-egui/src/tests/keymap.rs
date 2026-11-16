@@ -244,6 +244,21 @@ fn cmd_alt_shift_c_and_v_copy_and_paste_metadata() {
     assert!(h.app.session.clipboard.is_none(), "no edit settings were copied");
     assert_eq!(h.app.ui.dialog, None, "no Paste Selected Settings");
 }
+/// ⌘⌥⇧P saves the edit to Apple Photos; on a photo that wasn't copied from Photos it says why
+/// instead of doing nothing.
+#[test]
+fn cmd_alt_shift_p_saves_the_edit_to_apple_photos() {
+    let mut h = demo();
+    let id = h.app.session.visible()[0];
+    select(&mut h, id);
+    let r = h.request("ui.key", json!({"key": "P", "cmd": true, "alt": true, "shift": true}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    assert!(toast.contains("nothing to save to Apple Photos: not copied from Apple Photos"), "{toast:?}");
+    assert_eq!(h.app.session.catalog.photo(id).unwrap().flag, lightcraft_catalog::Flag::None, "not P's pick flag");
+}
+
 /// The opening release can carry both physical shortcut keys and the replacement text.
 #[test]
 fn opening_numeric_release_keeps_keys_in_the_editor() {
