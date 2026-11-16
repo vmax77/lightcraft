@@ -244,3 +244,35 @@ fn saving_an_edit_to_photos_runs_in_the_background_and_says_how_it_went() {
     assert!(toast.contains(why), "{toast}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Reading edits back from Photos runs on a worker under a row in the activity stack, and says how
+/// it went (here, off macOS or without Photos access, why it couldn't); nothing changes then.
+#[test]
+fn reading_edits_from_photos_runs_in_the_background_and_says_how_it_went() {
+    let mut h = Headless::new(
+        LightcraftApp::new(lightcraft_engine::Session::new(), Services { png: None, local_places: Some(Vec::new()), ..Default::default() }),
+        [1200.0, 1000.0],
+        1.0,
+    );
+    let read = PhotosRead {
+        library: "/T.photoslibrary".into(),
+        view: PhotosView::All,
+        items: vec![PhotosItem { uuid: "U1".into(), file_name: "U1.JPG".into(), format: "JPG".into(), width: 4, height: 3, ..Default::default() }],
+        albums: Vec::new(),
+        warnings: Vec::new(),
+    };
+    h.app.session.show_photos(read).unwrap();
+    let u1 = h.app.session.catalog.photos().next().unwrap().id;
+    let r = h.app.run("applePhotos.restoreEdit", json!({"ids": [u1.0]})).unwrap();
+    assert_eq!(r["asked"], json!([u1.0]), "{r}");
+    assert!(h.app.run("applePhotos.restoreEdit", json!({"ids": [u1.0]})).is_err(), "one read at a time");
+    let list = h.app.session.activity.list();
+    assert!(list.iter().any(|t| t.kind == "applePhotosRestore"), "{list:?}");
+    h.settle(SETTLE);
+    assert!(h.app.photos_restore.is_none());
+    assert!(h.app.session.activity.list().iter().all(|t| t.kind != "applePhotosRestore"), "its row went");
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
+    assert!(toast.contains(why), "{toast}");
+    assert!(!h.app.session.catalog.photo(u1).unwrap().is_edited());
+}

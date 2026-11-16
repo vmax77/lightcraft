@@ -202,9 +202,24 @@ Photos won't let apps edit (a shared album's), is refused. Photos that weren't c
 no edits, are skipped and said why. The asset is found by its UUID, so a library that is a copy of the System
 Photo Library saves to the System Photo Library's asset.
 
-Not yet: the edit is not read back (a later edit in Photos, or another app's, is not seen by LightCraft, and
-saving again replaces it, built from the original); no HDR (gain map) rendition; Live Photos keep their motion
-unedited; libraries other than the System Photo Library.
+Not yet: an edit made later in Photos, or another app's, is not seen by LightCraft, and saving again replaces it,
+built from the original; no HDR (gain map) rendition; Live Photos keep their motion unedited; libraries other than
+the System Photo Library.
+
+## Reading an edit back from Photos
+
+**Photo ▸ Restore Edit from Apple Photos** (`applePhotos.restoreEdit`) gives a photo shown from Photos, or the copy
+made to edit it, the develop settings LightCraft stored when it saved the edit Photos shows. Editing carries on
+where it was: on another Mac that syncs with iCloud Photos, or after the LightCraft copy is gone. It is one undo
+step, and nothing changes in Photos.
+
+PhotoKit is asked for the asset's editing input with LightCraft's format
+(`ai.storyteller.lightcraft.develop`) as the one it can handle (`canHandleAdjustmentData`), on a worker under a row
+in the activity stack (Photos may download the photo from iCloud first; ✕ stops it). Photos hands the stored data
+over only when the edit it shows is LightCraft's. The settings are checked like any from outside the app, and
+values out of range are brought back into range. Skipped, and said why: an edit made in Photos or another app since
+(or a photo never edited there), settings too large to have been stored, and photos not from Photos. Same limits as
+saving: System Photo Library only, packaged macOS app only.
 
 ### Manual test (macOS, packaged app)
 
@@ -215,3 +230,7 @@ unedited; libraries other than the System Photo Library.
 4. Revert in Photos, then save again from LightCraft: the edit comes back.
 5. Deny the change when macOS asks: the toast says LightCraft was not allowed, and Photos is unchanged.
 6. Pick a photo only in iCloud (Optimize Mac Storage), edit and save: the row shows the download, ✕ stops it.
+7. Reset the photo's settings in LightCraft, then Photo ▸ Restore Edit from Apple Photos: the saved settings come
+   back; Edit ▸ Undo takes them away again.
+8. Edit the same photo in Photos (any adjustment), then Restore Edit again: it is skipped, saying the edit in
+   Photos was not saved by LightCraft.

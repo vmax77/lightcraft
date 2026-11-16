@@ -76,6 +76,24 @@ fn save_edit(s: &mut Session, p: &Value) -> crate::Result<Value> {
     }))
 }
 
+/// Read back the settings LightCraft stored with the edit Photos shows for each target photo (see
+/// [`crate::photos_restore`]).
+fn restore_edit(s: &mut Session, p: &Value) -> crate::Result<Value> {
+    const C: &str = "applePhotos.restoreEdit";
+    let ids = s.targets(p).map_err(|e| bad(C, e.to_string()))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (cancel, mut progress) = (std::sync::atomic::AtomicBool::new(false), |_: f64| {});
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut read = crate::photos_restore::photokit_read(&cancel, &mut progress);
+    #[cfg(target_arch = "wasm32")]
+    let mut read = |_: &str| -> Result<Option<(String, Vec<u8>)>, String> { Err("Apple Photos is only available on macOS".into()) };
+    let (restored, skipped) = s.restore_photos_edits(&ids, &mut read).map_err(|e| bad(C, e.to_string()))?;
+    Ok(json!({
+        "restored": restored.iter().map(|id| id.0).collect::<Vec<_>>(),
+        "skipped": skipped.iter().map(|k| json!({"id": k.id.0, "why": k.why})).collect::<Vec<_>>(),
+    }))
+}
+
 fn albums(s: &mut Session, _: &Value) -> crate::Result<Value> {
     let browse = s.photos_browse.as_ref();
     Ok(json!({
@@ -122,6 +140,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{ids?: photo ids (default: the selection)} — for each edited photo that was copied from Apple Photos to be edited, render it (full-size JPEG, Display P3) and put it on the asset it came from, in place of what Photos showed; Photos keeps the original (Revert to Original) and LightCraft's settings go with the edit. System Photo Library only, macOS app only; macOS asks to allow each change. Others are skipped → {saved: [id], skipped: [{id, why}]}",
             always,
             save_edit
+        ),
+        cmd!(
+            "applePhotos.restoreEdit",
+            "Restore Edit from Apple Photos",
+            ["Photo"],
+            None,
+            "{ids?: photo ids (default: the selection)} — for each Apple Photos item (or copy made of one) whose edit in Photos was saved there by LightCraft (Save Edit to Apple Photos), read back the develop settings stored with it and apply them, as one undo step; an edit made since in Photos or another app is not LightCraft's and is skipped. System Photo Library only, macOS app only; nothing is changed in Photos → {restored: [id], skipped: [{id, why}]}",
+            always,
+            restore_edit
         ),
         cmd!(
             query "applePhotos.albums",

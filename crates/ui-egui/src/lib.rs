@@ -38,6 +38,7 @@ pub mod menus;
 mod missing_sweep;
 pub mod panels;
 pub mod photos_edit;
+pub mod photos_restore;
 pub mod photos_save;
 pub mod photos_view;
 pub mod pick;
@@ -337,6 +338,8 @@ pub struct LightcraftApp {
     pub photos_edit: photos_edit::PhotosEdit,
     /// Edits being saved back to Apple Photos.
     pub photos_save: photos_save::PhotosSaves,
+    /// Edits being read back from Apple Photos.
+    pub photos_restore: Option<photos_restore::Running>,
     /// Scans stopped without waiting for their workers: each channel is kept until its worker ends, so
     /// the probes it took from the session come back.
     pub(crate) scans_stopping: import::StoppingScans,
