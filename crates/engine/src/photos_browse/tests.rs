@@ -108,6 +108,13 @@ fn photos_views_show_proxies_of_the_shown_assets() {
     );
     assert!(matches!(proxy_of(&s, ASSET_E).source, Source::ApplePhotos { original: None, .. }), "only in iCloud");
 
+    // what Photos says about A: title, caption, keywords, location, and its favourite as 5 stars
+    assert_eq!((a.meta.title.as_str(), a.meta.caption.as_str()), ("Harbour at noon", "Boats, gulls and a lighthouse."));
+    assert_eq!(a.meta.keywords, ["boats", "sea"], "each once");
+    assert_eq!(a.meta.gps, Some((48.5, -3.25)));
+    assert_eq!(a.rating, 5, "a favourite");
+    assert_eq!((d.rating, d.meta.gps, d.meta.title.as_str()), (0, None, ""), "D: nothing to carry over");
+
     let r = show(&mut s, &library, json!({"view": "favourites"}));
     assert_eq!(r["new"], 0, "the proxies are made once");
     assert_eq!(uuids(&mut s), [ASSET_A]);
@@ -146,6 +153,7 @@ fn an_original_downloaded_or_offloaded_since_is_relinked() {
         captured: None,
         file_size: 1,
         original: original.map(str::to_string),
+        ..Default::default()
     };
     let read = |items| PhotosRead { library: "/L.photoslibrary".into(), view: PhotosView::All, items, albums: Vec::new(), warnings: Vec::new() };
     s.show_photos(read(vec![item(None)])).unwrap();
@@ -156,6 +164,42 @@ fn an_original_downloaded_or_offloaded_since_is_relinked() {
     let other = PhotosRead { library: "/M.photoslibrary".into(), ..read(vec![item(None)]) };
     assert_eq!(s.show_photos(other).unwrap()["new"], 1);
     assert_eq!(s.visible().len(), 1);
+}
+
+/// Photos wins: what it says about an asset replaces what its proxy had, every time the library
+/// is read.
+#[test]
+fn a_proxy_mirrors_what_photos_says() {
+    let mut s = Session::new();
+    let item = |title: &str, favourite: bool| PhotosItem {
+        uuid: ASSET_B.into(),
+        file_name: "B.JPG".into(),
+        format: "JPG".into(),
+        width: 3,
+        height: 2,
+        title: title.into(),
+        keywords: vec!["sea".into()],
+        gps: Some((1.0, 2.0)),
+        favourite,
+        ..Default::default()
+    };
+    let read = |items| PhotosRead { library: "/L.photoslibrary".into(), view: PhotosView::All, items, albums: Vec::new(), warnings: Vec::new() };
+    s.show_photos(read(vec![item("Harbour", true)])).unwrap();
+    let id = proxy_of(&s, ASSET_B).id;
+    // changed in LightCraft…
+    s.execute("photo.setMeta", &json!({"ids": [id.0], "title": "Mine", "keywords": ["mine"]})).unwrap();
+    s.execute("photo.rate", &json!({"ids": [id.0], "rating": 3})).unwrap();
+    // …then read again: Photos wins
+    let r = s.show_photos(read(vec![item("Harbour, renamed", true)])).unwrap();
+    assert_eq!(r["updated"], 1, "{r}");
+    let p = proxy_of(&s, ASSET_B);
+    assert_eq!((p.meta.title.as_str(), p.meta.keywords.as_slice(), p.rating), ("Harbour, renamed", ["sea".to_string()].as_slice(), 5));
+    // no longer a favourite: its 5 stars go, other ratings stay
+    s.show_photos(read(vec![item("Harbour, renamed", false)])).unwrap();
+    assert_eq!(proxy_of(&s, ASSET_B).rating, 0);
+    s.execute("photo.rate", &json!({"ids": [id.0], "rating": 2})).unwrap();
+    let r = s.show_photos(read(vec![item("Harbour, renamed", false)])).unwrap();
+    assert_eq!((r["updated"].as_u64(), proxy_of(&s, ASSET_B).rating), (Some(0), 2), "nothing changed in Photos");
 }
 
 #[test]
@@ -231,6 +275,7 @@ fn a_proxy_is_named_with_the_extension_of_the_file_photos_keeps() {
         captured: None,
         file_size: 0,
         original: Some(library.root.join("originals").join("0").join(format!("{ASSET_F}.jpeg")).to_string_lossy().into()),
+        ..Default::default()
     };
     let at = library.root.to_string_lossy().into_owned();
     s.show_photos(PhotosRead { library: at, view: PhotosView::All, items: vec![stale], albums: Vec::new(), warnings: Vec::new() }).unwrap();

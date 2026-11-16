@@ -169,6 +169,14 @@ Report the toast or JSON, and the macOS and Photos versions.
 - Quitting the desktop app while Photos is importing doesn't wait for it: Photos may still finish the import,
   but LightCraft won't show the outcome.
 
+## What comes over from Photos
+
+A photo shown from Photos (the sidebar's Apple Photos section) carries what Photos says about it: its title,
+caption, keywords and location, and a **Favourite** as 5 stars. Photos wins: each time the library is read
+again, those fields of a photo not yet copied for editing are replaced with Photos' values, and a photo that is no
+longer a favourite loses its 5 stars (ratings of 1–4 stars stay). Once a photo has been copied to edit it,
+LightCraft leaves its metadata alone. Not carried over yet: people, place names and which albums it is in.
+
 ## Saving an edit back to Photos
 
 A photo copied out of Photos to be edited (issue #1622: the first edit of an item from the sidebar's Apple

@@ -66,7 +66,7 @@ pub struct PhotosBrowse {
 }
 
 /// What a proxy is made from: one asset of a view.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PhotosItem {
     pub uuid: String,
     pub file_name: String,
@@ -79,6 +79,42 @@ pub struct PhotosItem {
     pub file_size: u64,
     /// The original inside the package, unless Photos says it is only in iCloud.
     pub original: Option<String>,
+    /// What Photos says about it, which its proxy mirrors ([`PhotosItem::mirror`]).
+    pub title: String,
+    pub caption: String,
+    pub keywords: Vec<String>,
+    /// `(latitude, longitude)` in degrees.
+    pub gps: Option<(f64, f64)>,
+    pub favourite: bool,
+}
+
+/// The rating Photos' favourite gives a proxy.
+pub const FAVOURITE_RATING: u8 = 5;
+
+impl PhotosItem {
+    /// `meta` and `rating` with what Photos says about the asset: its title, caption, keywords and
+    /// location replace the proxy's (Photos wins), and a favourite is rated
+    /// [`FAVOURITE_RATING`]; a proxy no longer a favourite loses that rating, while ratings Photos
+    /// has no say on (1–4 stars on a photo that is not a favourite) stay.
+    pub fn mirror(&self, meta: &lightcraft_catalog::Meta, rating: u8) -> (lightcraft_catalog::Meta, u8) {
+        let mut meta = meta.clone();
+        meta.title.clone_from(&self.title);
+        meta.caption.clone_from(&self.caption);
+        meta.keywords.clone_from(&self.keywords);
+        meta.gps = self.gps;
+        let rating = match (self.favourite, rating) {
+            (true, _) => FAVOURITE_RATING,
+            (false, FAVOURITE_RATING) => 0,
+            (false, r) => r,
+        };
+        (meta, rating)
+    }
+}
+
+/// `keywords` trimmed, without empty or repeated ones, in order.
+fn clean_keywords(keywords: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    keywords.iter().map(|k| k.trim()).filter(|k| !k.is_empty() && seen.insert(*k)).map(str::to_owned).collect()
 }
 
 /// One view of a Photos library, read by [`read_view`].
@@ -206,6 +242,11 @@ mod native {
             captured: a.created.map(|d| d.naive_local().format("%Y-%m-%dT%H:%M:%S").to_string()),
             file_size: a.original_size.unwrap_or(0),
             original,
+            title: a.title.as_deref().map(str::trim).unwrap_or_default().to_owned(),
+            caption: a.caption.as_deref().map(str::trim).unwrap_or_default().to_owned(),
+            keywords: super::clean_keywords(&a.keywords),
+            gps: a.location.map(|g| (g.latitude, g.longitude)),
+            favourite: a.favourite,
         }
     }
 }
@@ -266,11 +307,25 @@ impl Session {
             let source = Source::ApplePhotos { library: read.library.clone(), uuid: item.uuid.clone(), original: item.original.clone() };
             match known.get(&item.uuid) {
                 Some((id, original, file_name)) => {
+                    let mut changed = false;
                     // also a proxy named before its name took the stored file's extension
                     if *original != item.original || *file_name != item.file_name {
                         ops.push(Op::Relink { id: *id, file_name: item.file_name.clone(), source, format: Some(item.format.clone()) });
-                        updated += 1;
+                        changed = true;
                     }
+                    // what Photos says about it wins over what the proxy had
+                    if let Some(p) = self.catalog.photo(*id) {
+                        let (meta, rating) = item.mirror(&p.meta, p.rating);
+                        if meta != p.meta {
+                            ops.push(Op::SetMeta { id: *id, meta: Box::new(meta) });
+                            changed = true;
+                        }
+                        if rating != p.rating {
+                            ops.push(Op::SetRating { id: *id, rating });
+                            changed = true;
+                        }
+                    }
+                    updated += usize::from(changed);
                     members.push(*id);
                 }
                 None => {
@@ -280,6 +335,7 @@ impl Session {
                     photo.captured = item.captured.clone();
                     photo.file_size = item.file_size;
                     photo.local = true;
+                    (photo.meta, photo.rating) = item.mirror(&photo.meta, photo.rating);
                     ops.push(Op::AddPhoto { photo: Box::new(photo) });
                     added += 1;
                     members.push(id);

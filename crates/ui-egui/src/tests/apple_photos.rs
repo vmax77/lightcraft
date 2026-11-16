@@ -54,6 +54,7 @@ fn shown(h: &mut Headless) {
         captured: Some("2021-06-15T12:00:00".into()),
         file_size: 10,
         original: None,
+        ..Default::default()
     };
     let read = PhotosRead {
         library: "/nowhere/Test.photoslibrary".into(),
@@ -134,6 +135,7 @@ fn the_first_edit_of_a_photos_item_copies_it_into_the_library() {
         captured: None,
         file_size: 10,
         original,
+        ..Default::default()
     };
     let library = package.to_string_lossy().into_owned();
     let read = PhotosRead {
@@ -213,6 +215,7 @@ fn saving_an_edit_to_photos_runs_in_the_background_and_says_how_it_went() {
             captured: None,
             file_size: jpeg.len() as u64,
             original: Some(original.to_string_lossy().into()),
+            ..Default::default()
         }],
         albums: Vec::new(),
         warnings: Vec::new(),
