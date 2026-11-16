@@ -102,11 +102,14 @@ impl PhotosSave {
     }
 }
 
-/// A new temporary JPEG for photo `id`.
+/// A new temporary JPEG for photo `id`, under a name this process never gives twice (a name freed
+/// by one save is not taken by the next, so a caller can check its file is gone).
 fn temp_jpeg(id: PhotoId) -> std::io::Result<(std::fs::File, std::path::PathBuf)> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir();
-    for i in 0..1000u32 {
-        let path = dir.join(format!("lightcraft-to-photos-{}-{}-{i}.jpg", std::process::id(), id.0));
+    for _ in 0..1000u32 {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!("lightcraft-to-photos-{}-{}-{n}.jpg", std::process::id(), id.0));
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(f) => return Ok((f, path)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
