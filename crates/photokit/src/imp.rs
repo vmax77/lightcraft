@@ -422,9 +422,9 @@ struct SendOutput(Retained<objc2_photos::PHContentEditingOutput>);
 unsafe impl Send for SendOutput {}
 
 /// What the editing-input request's handlers pass to the waiting thread.
-enum Prepared {
+enum Prepared<T> {
     Progress(f64),
-    Done(Result<SendOutput, String>),
+    Done(Result<T, String>),
 }
 
 /// PhotoKit's reason in a content-editing-input `info` dictionary.
@@ -439,58 +439,77 @@ fn input_error(info: &objc2_foundation::NSDictionary) -> String {
         .unwrap_or_else(|| "no reason given".into())
 }
 
-pub fn save_edit(
-    local_id: &str,
-    rendered: &std::path::Path,
-    adjustment: &super::Adjustment,
-    cancel: &std::sync::atomic::AtomicBool,
-    progress: &mut dyn FnMut(f64),
-) -> Result<(), super::SaveError> {
-    use super::SaveError;
-    use objc2::AllocAnyThread;
-    use objc2_photos::{
-        PHAdjustmentData, PHAssetChangeRequest, PHAssetEditOperation, PHContentEditingInput, PHContentEditingInputRequestOptions,
-        PHContentEditingOutput,
-    };
-    use std::sync::atomic::Ordering;
-
+/// The image asset `local_id`, once access, the thread and the asset have been checked. With
+/// `edit`, its content must be one Photos lets apps edit.
+fn image_asset(local_id: &str, edit: bool) -> Result<Retained<PHAsset>, super::EditError> {
+    use super::EditError;
     let access = access()?;
     if !access.can_read() {
         return Err(PhotoKitError::NotAllowed(access).into());
     }
     if objc2::MainThreadMarker::new().is_some() {
-        return Err(SaveError::MainThread);
+        return Err(EditError::MainThread);
     }
     let ids = NSArray::from_retained_slice(&[NSString::from_str(local_id)]);
     // SAFETY: a class method taking an array of NSString identifiers and optional options.
     let found = unsafe { PHAsset::fetchAssetsWithLocalIdentifiers_options(&ids, None) };
-    let asset = each(&found, 0, 1).into_iter().next().ok_or(SaveError::NotFound)?;
+    let asset = each(&found, 0, 1).into_iter().next().ok_or(EditError::NotFound)?;
     // SAFETY: getters taking no arguments / an integer enum, returning an enum and a bool.
-    let editable = unsafe { asset.mediaType() == PHAssetMediaType::Image && asset.canPerformEditOperation(PHAssetEditOperation::Content) };
-    if !editable {
-        return Err(SaveError::NotEditable);
+    let ok = unsafe {
+        asset.mediaType() == PHAssetMediaType::Image && (!edit || asset.canPerformEditOperation(objc2_photos::PHAssetEditOperation::Content))
+    };
+    if !ok {
+        return Err(EditError::NotEditable);
     }
+    Ok(asset)
+}
 
-    let (tx, rx) = mpsc::channel::<Prepared>();
+/// Ask Photos for the content editing input of `asset` (downloading it from iCloud when needed)
+/// and wait for it. `can_handle` names the adjustment format the caller reads, so Photos hands
+/// over the data stored with an edit in that format. `take` runs in PhotoKit's handler with the
+/// input and makes what is sent back.
+fn with_input<T: Send + 'static>(
+    asset: &PHAsset,
+    can_handle: Option<String>,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+    take: impl Fn(&objc2_photos::PHContentEditingInput) -> T + 'static,
+) -> Result<T, super::EditError> {
+    use super::EditError;
+    use objc2_photos::{PHAdjustmentData, PHContentEditingInput, PHContentEditingInputRequestOptions};
+    use std::sync::atomic::Ordering;
+
+    let (tx, rx) = mpsc::channel::<Prepared<T>>();
     let on_progress = tx.clone();
     let progressed = RcBlock::new(move |fraction: std::ffi::c_double, _stop: std::ptr::NonNull<objc2::runtime::Bool>| {
         let _ = on_progress.send(Prepared::Progress(fraction));
     });
     let handler = RcBlock::new(move |input: *mut PHContentEditingInput, info: std::ptr::NonNull<objc2_foundation::NSDictionary>| {
-        // SAFETY: PhotoKit passes a valid input (or nil) and a valid dictionary, both living for the
-        // call; the output made from the input is retained, so it outlives them.
+        // SAFETY: PhotoKit passes a valid input (or nil) and a valid dictionary, both living for the call.
         let result = match unsafe { input.as_ref() } {
-            Some(input) => Ok(SendOutput(unsafe { PHContentEditingOutput::initWithContentEditingInput(PHContentEditingOutput::alloc(), input) })),
+            Some(input) => Ok(take(input)),
             None => Err(input_error(unsafe { info.as_ref() })),
         };
         let _ = tx.send(Prepared::Done(result));
     });
-    // SAFETY: `new` makes default options; the setters take a bool and a progress block of the
-    // declared type (`void (^)(double, BOOL *)`), which the options object copies and keeps.
+    let handles = can_handle.map(|format| {
+        RcBlock::new(move |data: std::ptr::NonNull<PHAdjustmentData>| {
+            // SAFETY: PhotoKit passes a valid adjustment data object living for the call; its
+            // `formatIdentifier` takes no arguments and returns a non-null NSString.
+            let id = unsafe { data.as_ref().formatIdentifier() };
+            objc2::runtime::Bool::new(id.to_string() == format)
+        })
+    });
+    // SAFETY: `new` makes default options; the setters take a bool and blocks of the declared types
+    // (`void (^)(double, BOOL *)`, `BOOL (^)(PHAdjustmentData *)`), which the options object copies
+    // and keeps.
     let options = unsafe {
         let options = PHContentEditingInputRequestOptions::new();
         options.setNetworkAccessAllowed(true);
         options.setProgressHandler(Some(&progressed));
+        if let Some(handles) = &handles {
+            options.setCanHandleAdjustmentData(handles);
+        }
         options
     };
     // SAFETY: the handler has the block signature the header declares
@@ -500,11 +519,11 @@ pub fn save_edit(
 
     const TICK: Duration = Duration::from_millis(200);
     let mut idle = Duration::ZERO;
-    let output = loop {
+    loop {
         if cancel.load(Ordering::Relaxed) {
             // SAFETY: cancels the request this call made, by the id PhotoKit gave it.
             unsafe { asset.cancelContentEditingInputRequest(request) };
-            return Err(SaveError::Cancelled);
+            return Err(EditError::Cancelled);
         }
         match rx.recv_timeout(TICK) {
             Ok(Prepared::Progress(fraction)) => {
@@ -513,25 +532,63 @@ pub fn save_edit(
                     progress(fraction.clamp(0.0, 1.0));
                 }
             }
-            Ok(Prepared::Done(Ok(output))) => break output.0,
-            Ok(Prepared::Done(Err(why))) => return Err(SaveError::Prepare(why)),
+            Ok(Prepared::Done(Ok(t))) => return Ok(t),
+            Ok(Prepared::Done(Err(why))) => return Err(EditError::Prepare(why)),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 idle += TICK;
                 if idle >= super::PREPARE_IDLE {
                     // SAFETY: as above.
                     unsafe { asset.cancelContentEditingInputRequest(request) };
-                    return Err(SaveError::TimedOut);
+                    return Err(EditError::TimedOut);
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(SaveError::Prepare("PhotoKit ended the request".into())),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(EditError::Prepare("PhotoKit ended the request".into())),
         }
-    };
+    }
+}
+
+pub fn read_adjustment(
+    local_id: &str,
+    format: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<Option<super::StoredAdjustment>, super::EditError> {
+    let asset = image_asset(local_id, false)?;
+    let wanted = format.to_string();
+    with_input(&asset, Some(format.to_string()), cancel, progress, move |input| {
+        // SAFETY: `adjustmentData` takes no arguments and returns an optional object; its getters
+        // take no arguments and return non-null NSStrings and NSData, copied out at once.
+        let data = unsafe { input.adjustmentData() }?;
+        let (id, version, bytes) = unsafe { (data.formatIdentifier().to_string(), data.formatVersion().to_string(), data.data().to_vec()) };
+        // Photos hands it over only when `can_handle` said yes; checked again all the same
+        (id == wanted).then_some(super::StoredAdjustment { version, data: bytes })
+    })
+}
+
+pub fn save_edit(
+    local_id: &str,
+    rendered: &std::path::Path,
+    adjustment: &super::Adjustment,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<(), super::EditError> {
+    use super::EditError;
+    use objc2::AllocAnyThread;
+    use objc2_photos::{PHAdjustmentData, PHAssetChangeRequest, PHContentEditingOutput};
+    use std::sync::atomic::Ordering;
+
+    let asset = image_asset(local_id, true)?;
+    let output = with_input(&asset, None, cancel, progress, |input| {
+        // SAFETY: an initializer taking the valid input PhotoKit passed; the output is retained.
+        SendOutput(unsafe { PHContentEditingOutput::initWithContentEditingInput(PHContentEditingOutput::alloc(), input) })
+    })?
+    .0;
 
     // SAFETY: a getter without arguments returning a non-null file URL inside Photos' editing area.
     let url = unsafe { output.renderedContentURL() };
     let target =
-        url.path().map(|p| std::path::PathBuf::from(p.to_string())).ok_or_else(|| SaveError::Write("Photos gave no file to write to".into()))?;
-    std::fs::copy(rendered, &target).map_err(|e| SaveError::Write(e.to_string()))?;
+        url.path().map(|p| std::path::PathBuf::from(p.to_string())).ok_or_else(|| EditError::Write("Photos gave no file to write to".into()))?;
+    std::fs::copy(rendered, &target).map_err(|e| EditError::Write(e.to_string()))?;
     // SAFETY: an initializer taking two NSStrings and NSData (copied by the object); the setter takes
     // the adjustment data the output keeps.
     unsafe {
@@ -545,7 +602,7 @@ pub fn save_edit(
         output.setAdjustmentData(Some(&adjustment));
     }
     if cancel.load(Ordering::Relaxed) {
-        return Err(SaveError::Cancelled);
+        return Err(EditError::Cancelled);
     }
     let change = RcBlock::new(move || {
         // SAFETY: runs inside `performChangesAndWait:`, the only place a change request may be made;
@@ -557,9 +614,9 @@ pub fn save_edit(
     let done = unsafe { PHPhotoLibrary::sharedPhotoLibrary().performChangesAndWait_error(RcBlock::as_ptr(&change)) };
     done.map_err(|e| {
         if e.code() == objc2_photos::PHPhotosError::UserCancelled.0 {
-            SaveError::Declined
+            EditError::Declined
         } else {
-            SaveError::Failed(e.localizedDescription().to_string())
+            EditError::Failed(e.localizedDescription().to_string())
         }
     })
 }

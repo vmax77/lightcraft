@@ -132,7 +132,7 @@ pub fn photokit_save<'a>(
         lightcraft_photokit::request_access().map_err(|e| e.to_string())?;
         let adjustment = lightcraft_photokit::Adjustment { format: ADJUSTMENT_FORMAT, version: ADJUSTMENT_VERSION, data };
         lightcraft_photokit::save_edit(&local_id, jpeg, &adjustment, cancel, progress).map_err(|e| match e {
-            lightcraft_photokit::SaveError::NotFound => {
+            lightcraft_photokit::EditError::NotFound => {
                 "it is not in the System Photo Library, the only one LightCraft can save edits to".to_string()
             }
             e => e.to_string(),

@@ -1,5 +1,6 @@
-//! Read the System Photo Library through Apple's PhotoKit (issue #1622, Phase 1 task 0), and save
-//! an edit back onto one of its photos ([`save_edit`]).
+//! Read the System Photo Library through Apple's PhotoKit (issue #1622, Phase 1 task 0), save an
+//! edit back onto one of its photos ([`save_edit`]), and read back what an app stored with the
+//! edit Photos shows ([`read_adjustment`]).
 //!
 //! PhotoKit is the supported way to read the library Photos uses as its System Photo Library. It
 //! needs the user's permission (System Settings › Privacy & Security › Photos), and a process that
@@ -164,9 +165,9 @@ pub struct Adjustment<'a> {
     pub data: &'a [u8],
 }
 
-/// Why an edit could not be saved to Photos ([`save_edit`]).
+/// Why an edit could not be saved to Photos ([`save_edit`]) or read from it ([`read_adjustment`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SaveError {
+pub enum EditError {
     /// PhotoKit can't be used (see [`PhotoKitError`]).
     PhotoKit(PhotoKitError),
     /// Called on the main thread, where PhotoKit's answers arrive: it would never return.
@@ -176,7 +177,7 @@ pub enum SaveError {
     NotFound,
     /// Photos does not let this asset's content be edited (a video, or a shared or synced photo).
     NotEditable,
-    /// The adjustment data is larger than [`MAX_ADJUSTMENT_BYTES`].
+    /// The adjustment data (saved or read) is larger than [`MAX_ADJUSTMENT_BYTES`].
     TooLarge,
     /// The rendered photo is missing or empty.
     NoRender,
@@ -194,18 +195,18 @@ pub enum SaveError {
     Failed(String),
 }
 
-impl std::fmt::Display for SaveError {
+impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PhotoKit(e) => e.fmt(f),
-            Self::MainThread => f.write_str("saving to Photos can't run on the main thread"),
+            Self::MainThread => f.write_str("Photos can't be asked from the main thread"),
             Self::NotFound => f.write_str("the photo is not in the System Photo Library"),
             Self::NotEditable => f.write_str("Photos does not allow this item to be edited"),
-            Self::TooLarge => f.write_str("the edit's settings are too large to store in Photos"),
+            Self::TooLarge => f.write_str("the edit's settings are too large for Photos"),
             Self::NoRender => f.write_str("the edited photo was not rendered"),
-            Self::Cancelled => f.write_str("saving to Photos was cancelled"),
+            Self::Cancelled => f.write_str("cancelled"),
             Self::TimedOut => f.write_str("Photos did not answer"),
-            Self::Prepare(why) => write!(f, "Photos could not prepare the photo for editing: {why}"),
+            Self::Prepare(why) => write!(f, "Photos could not prepare the photo: {why}"),
             Self::Write(why) => write!(f, "the edited photo could not be handed to Photos: {why}"),
             Self::Declined => f.write_str("LightCraft was not allowed to change the photo in Photos"),
             Self::Failed(why) => write!(f, "Photos did not save the edit: {why}"),
@@ -213,9 +214,9 @@ impl std::fmt::Display for SaveError {
     }
 }
 
-impl std::error::Error for SaveError {}
+impl std::error::Error for EditError {}
 
-impl From<PhotoKitError> for SaveError {
+impl From<PhotoKitError> for EditError {
     fn from(e: PhotoKitError) -> Self {
         Self::PhotoKit(e)
     }
@@ -233,14 +234,39 @@ pub fn save_edit(
     adjustment: &Adjustment,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &mut dyn FnMut(f64),
-) -> Result<(), SaveError> {
+) -> Result<(), EditError> {
     if adjustment.data.len() > MAX_ADJUSTMENT_BYTES {
-        return Err(SaveError::TooLarge);
+        return Err(EditError::TooLarge);
     }
     if !std::fs::metadata(rendered).is_ok_and(|m| m.is_file() && m.len() > 0) {
-        return Err(SaveError::NoRender);
+        return Err(EditError::NoRender);
     }
     imp::save_edit(local_id, rendered, adjustment, cancel, progress)
+}
+
+/// What an app stored with the edit Photos shows for an asset ([`read_adjustment`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredAdjustment {
+    pub version: String,
+    pub data: Vec<u8>,
+}
+
+/// What `format`'s app stored with the edit Photos shows for the asset `local_id`, or `None` when
+/// the asset is unedited or its current edit was made by another app (or in Photos). Photos may
+/// have to download the asset from iCloud first: `progress` is told the fraction, setting
+/// `cancel` stops it. Nothing is changed. Call it from a worker thread: PhotoKit answers on the
+/// main thread.
+pub fn read_adjustment(
+    local_id: &str,
+    format: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<Option<StoredAdjustment>, EditError> {
+    let found = imp::read_adjustment(local_id, format, cancel, progress)?;
+    match found {
+        Some(a) if a.data.len() > MAX_ADJUSTMENT_BYTES => Err(EditError::TooLarge),
+        found => Ok(found),
+    }
 }
 
 /// Photo, video or something else.
@@ -346,7 +372,16 @@ mod imp {
         _: &super::Adjustment,
         _: &std::sync::atomic::AtomicBool,
         _: &mut dyn FnMut(f64),
-    ) -> Result<(), super::SaveError> {
+    ) -> Result<(), super::EditError> {
+        Err(PhotoKitError::NotMacOs.into())
+    }
+
+    pub fn read_adjustment(
+        _: &str,
+        _: &str,
+        _: &std::sync::atomic::AtomicBool,
+        _: &mut dyn FnMut(f64),
+    ) -> Result<Option<super::StoredAdjustment>, super::EditError> {
         Err(PhotoKitError::NotMacOs.into())
     }
 
@@ -412,15 +447,16 @@ mod tests {
         let too_big = Adjustment { format: "x", version: "1", data: &big };
         let jpeg = dir.join("a.jpg");
         std::fs::write(&jpeg, b"\xff\xd8").unwrap();
-        assert_eq!(save_edit("A/L0/001", &jpeg, &too_big, &cancel, &mut progress), Err(SaveError::TooLarge));
+        assert_eq!(save_edit("A/L0/001", &jpeg, &too_big, &cancel, &mut progress), Err(EditError::TooLarge));
         let small = Adjustment { format: "x", version: "1", data: b"{}" };
         let empty = dir.join("empty.jpg");
         std::fs::write(&empty, b"").unwrap();
-        assert_eq!(save_edit("A/L0/001", &empty, &small, &cancel, &mut progress), Err(SaveError::NoRender));
-        assert_eq!(save_edit("A/L0/001", &dir.join("missing.jpg"), &small, &cancel, &mut progress), Err(SaveError::NoRender));
+        assert_eq!(save_edit("A/L0/001", &empty, &small, &cancel, &mut progress), Err(EditError::NoRender));
+        assert_eq!(save_edit("A/L0/001", &dir.join("missing.jpg"), &small, &cancel, &mut progress), Err(EditError::NoRender));
         // a test binary has no usage description: PhotoKit is never reached
         let expected = if cfg!(target_os = "macos") { PhotoKitError::NoUsageDescription } else { PhotoKitError::NotMacOs };
-        assert_eq!(save_edit("A/L0/001", &jpeg, &small, &cancel, &mut progress), Err(SaveError::PhotoKit(expected)));
+        assert_eq!(save_edit("A/L0/001", &jpeg, &small, &cancel, &mut progress), Err(EditError::PhotoKit(expected)));
+        assert_eq!(read_adjustment("A/L0/001", "x", &cancel, &mut progress), Err(EditError::PhotoKit(expected)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
