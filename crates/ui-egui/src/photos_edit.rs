@@ -166,7 +166,7 @@ mod tests {
     fn copy(id: u64, original: Option<&str>) -> PhotosCopy {
         PhotosCopy {
             id: PhotoId(id),
-            link: PhotosLink { library: "Test.photoslibrary".into(), uuid: format!("U{id}") },
+            link: PhotosLink { library: "Test.photoslibrary".into(), uuid: format!("U{id}"), ..Default::default() },
             original: original.map(PathBuf::from),
             size: 10,
             file_name: format!("U{id}.JPG"),

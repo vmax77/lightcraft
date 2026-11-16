@@ -30,6 +30,9 @@ pub struct PhotosRestore {
     /// Photos' id for the asset.
     pub uuid: String,
     pub file_name: String,
+    /// The edited version of Photos the photo builds on (see
+    /// [`lightcraft_catalog::PhotosSync::base_ms`]); `None`: the original.
+    pub base_ms: Option<i64>,
 }
 
 /// What Photos had for one photo.
@@ -40,12 +43,21 @@ pub enum Restored {
     NotLightCraft,
     /// LightCraft saved the edit but its settings were too large to store with it.
     NotStored,
+    /// The settings build on another version of the photo than this photo's file (an edit Photos
+    /// made that this library doesn't have).
+    OtherBase,
 }
 
 /// The settings in adjustment data LightCraft stored (`{"app", "version", "develop"}` JSON,
 /// [`crate::photos_save::adjustment_data`]): checked as settings from outside the app are.
 /// `Ok(None)` when they were left out for being too large.
 pub fn settings_from(version: &str, data: &[u8]) -> std::result::Result<Option<DevelopSettings>, String> {
+    stored(version, data).map(|(settings, _)| settings)
+}
+
+/// [`settings_from`] and the version of the photo they build on (`base`: an edit Photos made
+/// then, in milliseconds; `None`: the original).
+pub fn stored(version: &str, data: &[u8]) -> std::result::Result<(Option<DevelopSettings>, Option<i64>), String> {
     if version != ADJUSTMENT_VERSION {
         return Err(format!("the edit was saved by another version of LightCraft (format {version})"));
     }
@@ -56,8 +68,10 @@ pub fn settings_from(version: &str, data: &[u8]) -> std::result::Result<Option<D
     if v.get("app").and_then(Value::as_str) != Some("LightCraft") {
         return Err("the edit's settings are not LightCraft's".into());
     }
-    let Some(develop) = v.get("develop") else { return Ok(None) };
-    DevelopSettings::from_untrusted_json(develop).map(Some).map_err(|e| format!("the edit's settings can't be read: {e}"))
+    let base = v.get("base").and_then(Value::as_i64);
+    let Some(develop) = v.get("develop") else { return Ok((None, base)) };
+    let settings = DevelopSettings::from_untrusted_json(develop).map_err(|e| format!("the edit's settings can't be read: {e}"))?;
+    Ok((Some(settings), base))
 }
 
 impl PhotosRestore {
@@ -65,9 +79,10 @@ impl PhotosRestore {
     pub fn read(&self, read: &mut Read) -> std::result::Result<Restored, String> {
         let label = &self.file_name;
         let Some((version, data)) = read(&self.uuid).map_err(|e| format!("{label}: {e}"))? else { return Ok(Restored::NotLightCraft) };
-        match settings_from(&version, &data).map_err(|e| format!("{label}: {e}"))? {
-            Some(settings) => Ok(Restored::Settings(Box::new(settings))),
-            None => Ok(Restored::NotStored),
+        match stored(&version, &data).map_err(|e| format!("{label}: {e}"))? {
+            (_, base) if base != self.base_ms => Ok(Restored::OtherBase),
+            (Some(settings), _) => Ok(Restored::Settings(Box::new(settings))),
+            (None, _) => Ok(Restored::NotStored),
         }
     }
 }
@@ -101,15 +116,15 @@ impl Session {
         let (mut out, mut skipped) = (Vec::new(), Vec::new());
         for &id in ids {
             let Some(p) = self.catalog.photo(id) else { return Err(EngineError::Other(format!("no photo {}", id.0))) };
-            let uuid = match (&p.source, &p.from_photos) {
-                (Source::ApplePhotos { uuid, .. }, _) => uuid.clone(),
-                (_, Some(link)) => link.uuid.clone(),
+            let (uuid, base_ms) = match (&p.source, &p.from_photos) {
+                (Source::ApplePhotos { uuid, .. }, _) => (uuid.clone(), None),
+                (_, Some(link)) => (link.uuid.clone(), link.sync.as_ref().and_then(|s| s.base_ms)),
                 _ => {
                     skipped.push(Skipped { id, why: "not from Apple Photos" });
                     continue;
                 }
             };
-            out.push(PhotosRestore { id, uuid, file_name: p.file_name.clone() });
+            out.push(PhotosRestore { id, uuid, file_name: p.file_name.clone(), base_ms });
         }
         Ok((out, skipped))
     }
@@ -145,6 +160,7 @@ impl Session {
                 Restored::Settings(settings) => found.push((one.id, *settings)),
                 Restored::NotLightCraft => skipped.push(Skipped { id: one.id, why: NOT_LIGHTCRAFT }),
                 Restored::NotStored => skipped.push(Skipped { id: one.id, why: NOT_STORED }),
+                Restored::OtherBase => skipped.push(Skipped { id: one.id, why: OTHER_BASE }),
             }
         }
         Ok((self.adopt_restored(found)?, skipped))
@@ -153,6 +169,9 @@ impl Session {
 
 /// Why a photo's edit isn't read back: the edit Photos shows isn't LightCraft's.
 pub const NOT_LIGHTCRAFT: &str = "its edit in Photos was not saved by LightCraft";
+/// Why a photo's edit isn't read back: its settings build on a version of the photo this library
+/// doesn't have.
+pub const OTHER_BASE: &str = "its settings build on an edit Photos made that this photo doesn't start from";
 /// Why a photo's edit isn't read back: its settings were too large to store.
 pub const NOT_STORED: &str = "its settings were too large to store in Photos";
 

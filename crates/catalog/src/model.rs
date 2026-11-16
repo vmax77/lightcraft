@@ -345,12 +345,35 @@ pub struct Photo {
 }
 
 /// The Apple Photos asset a library photo was copied from (see [`Photo::from_photos`]).
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PhotosLink {
     /// The `.photoslibrary` package.
     pub library: String,
     /// Photos' id for the asset.
     pub uuid: String,
+    /// What LightCraft last knew of the asset's edit in Photos; `None` before the first save or
+    /// sync. Left out of the catalog JSON then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<PhotosSync>,
+}
+
+/// What LightCraft last knew of an asset's edit in Photos (issue #1622): enough to tell an edit
+/// made there since, and what the photo's settings are relative to.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PhotosSync {
+    /// The asset's modification time in Photos then, in milliseconds since 1970 (UTC).
+    pub photos_modified_ms: i64,
+    /// Photos' version then held LightCraft's edit, with the settings [`Self::settings`] names
+    /// (it was saved there with Save Edit to Apple Photos).
+    pub saved: bool,
+    /// A hash of the photo's develop settings then, to tell whether they changed since.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<String>,
+    /// The photo's file is an edited version Photos made (the asset's modification time then, in
+    /// milliseconds), which LightCraft's settings build on; `None`: the original.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_ms: Option<i64>,
 }
 
 /// What assisted culling measured on a photo.

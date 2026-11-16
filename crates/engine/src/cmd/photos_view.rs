@@ -66,10 +66,16 @@ fn save_edit(s: &mut Session, p: &Value) -> crate::Result<Value> {
     #[cfg(not(target_arch = "wasm32"))]
     let (cancel, mut progress) = (std::sync::atomic::AtomicBool::new(false), |_: f64| {});
     #[cfg(not(target_arch = "wasm32"))]
+    let (check_cancel, mut check_progress) = (std::sync::atomic::AtomicBool::new(false), |_: f64| {});
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut photos = crate::photos_sync::PhotoKitAccess { cancel: &check_cancel, progress: &mut check_progress };
+    #[cfg(not(target_arch = "wasm32"))]
     let mut save = crate::photos_save::photokit_save(&cancel, &mut progress);
     #[cfg(target_arch = "wasm32")]
+    let mut photos = crate::photos_sync::NoPhotos;
+    #[cfg(target_arch = "wasm32")]
     let mut save = |_: &str, _: &std::path::Path, _: &[u8]| -> Result<(), String> { Err("Apple Photos is only available on macOS".into()) };
-    let (saved, skipped) = s.save_photos_edits(&ids, &mut save).map_err(|e| bad(C, e.to_string()))?;
+    let (saved, skipped) = s.save_photos_edits(&ids, &mut save, &mut photos).map_err(|e| bad(C, e.to_string()))?;
     Ok(json!({
         "saved": saved.iter().map(|id| id.0).collect::<Vec<_>>(),
         "skipped": skipped.iter().map(|k| json!({"id": k.id.0, "why": k.why})).collect::<Vec<_>>(),
@@ -92,6 +98,27 @@ fn restore_edit(s: &mut Session, p: &Value) -> crate::Result<Value> {
         "restored": restored.iter().map(|id| id.0).collect::<Vec<_>>(),
         "skipped": skipped.iter().map(|k| json!({"id": k.id.0, "why": k.why})).collect::<Vec<_>>(),
     }))
+}
+
+/// Bring in the version Photos shows of each target photo copied from it, when Photos edited it
+/// (or went back to the original) since LightCraft last looked (see [`crate::photos_sync`]).
+fn sync(s: &mut Session, p: &Value) -> crate::Result<Value> {
+    const C: &str = "applePhotos.sync";
+    let ids = s.targets(p).map_err(|e| bad(C, e.to_string()))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (cancel, mut progress) = (std::sync::atomic::AtomicBool::new(false), |_: f64| {});
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut photos = crate::photos_sync::PhotoKitAccess { cancel: &cancel, progress: &mut progress };
+    #[cfg(target_arch = "wasm32")]
+    let mut photos = crate::photos_sync::NoPhotos;
+    let done = s.sync_photos_items(&ids, &mut photos).map_err(|e| bad(C, e.to_string()))?;
+    let row = |(id, a): &(lightcraft_catalog::PhotoId, crate::photos_sync::Adopted)| match a {
+        crate::photos_sync::Adopted::InStep => json!({"id": id.0, "changed": false}),
+        crate::photos_sync::Adopted::NewVersion { kept, snapshot } => {
+            json!({"id": id.0, "changed": true, "keptSettings": kept, "snapshot": snapshot})
+        }
+    };
+    Ok(json!({"photos": done.iter().map(row).collect::<Vec<_>>()}))
 }
 
 fn albums(s: &mut Session, _: &Value) -> crate::Result<Value> {
@@ -149,6 +176,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{ids?: photo ids (default: the selection)} — for each Apple Photos item (or copy made of one) whose edit in Photos was saved there by LightCraft (Save Edit to Apple Photos), read back the develop settings stored with it and apply them, as one undo step; an edit made since in Photos or another app is not LightCraft's and is skipped. System Photo Library only, macOS app only; nothing is changed in Photos → {restored: [id], skipped: [{id, why}]}",
             always,
             restore_edit
+        ),
+        cmd!(
+            "applePhotos.sync",
+            "Sync with Apple Photos",
+            ["Photo"],
+            None,
+            "{ids?: photo ids (default: the selection)} — for each photo copied from Apple Photos, ask Photos whether it shows an edit LightCraft didn't make (or went back to the original) since LightCraft last looked; if so, that version becomes the photo's file and LightCraft's settings build on it: settings never saved to Photos stay on top, settings saved there (already in Photos' version) start again from the default, kept as a snapshot when they changed since. Not an undo step. System Photo Library only, macOS app only → {photos: [{id, changed, keptSettings?, snapshot?}]}",
+            always,
+            sync
         ),
         cmd!(
             query "applePhotos.albums",

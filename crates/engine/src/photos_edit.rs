@@ -90,7 +90,7 @@ impl PhotosCopy {
 }
 
 /// A new file named `name` in `dir` (made if needed), or `name-1`, `name-2`… when taken.
-fn new_file(dir: &Path, name: &str) -> io::Result<(File, PathBuf)> {
+pub(crate) fn new_file(dir: &Path, name: &str) -> io::Result<(File, PathBuf)> {
     std::fs::create_dir_all(dir)?;
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
@@ -160,7 +160,7 @@ impl Session {
             let shown = crate::photos_browse::proxy_file_name(Some(&p.file_name), original.is_some().then_some(fallback.as_str()), uuid);
             out.push(PhotosCopy {
                 id,
-                link: PhotosLink { library: library.clone(), uuid: uuid.clone() },
+                link: PhotosLink { library: library.clone(), uuid: uuid.clone(), ..Default::default() },
                 original: original.as_deref().map(PathBuf::from),
                 size: p.file_size,
                 file_name: safe_name(&shown, &fallback),

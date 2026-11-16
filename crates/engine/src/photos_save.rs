@@ -40,6 +40,9 @@ pub struct PhotosSave {
     pub file_name: String,
     /// What is stored with the edit in Photos.
     pub adjustment: Vec<u8>,
+    /// What LightCraft last knew of the asset in Photos, to refuse replacing an edit made there
+    /// since that LightCraft hasn't brought in ([`crate::photos_sync`]).
+    pub sync: Option<lightcraft_catalog::PhotosSync>,
     export: PreparedExport,
 }
 
@@ -73,20 +76,31 @@ pub fn export_options() -> ExportOptions {
 }
 
 /// The adjustment data stored with `develop`: the settings when they fit, else only the app.
-pub fn adjustment_data(develop: &impl serde::Serialize) -> Vec<u8> {
+/// `base_ms`: the settings build on an edited version Photos made then (see
+/// [`lightcraft_catalog::PhotosSync::base_ms`]), not on the original.
+pub fn adjustment_data(develop: &impl serde::Serialize, base_ms: Option<i64>) -> Vec<u8> {
     let app = env!("CARGO_PKG_VERSION");
-    let full = serde_json::to_vec(&json!({"app": "LightCraft", "version": app, "develop": develop})).unwrap_or_default();
+    let full = serde_json::to_vec(&json!({"app": "LightCraft", "version": app, "develop": develop, "base": base_ms})).unwrap_or_default();
     if !full.is_empty() && full.len() <= MAX_ADJUSTMENT_BYTES {
         return full;
     }
-    serde_json::to_vec(&json!({"app": "LightCraft", "version": app})).unwrap_or_default()
+    serde_json::to_vec(&json!({"app": "LightCraft", "version": app, "base": base_ms})).unwrap_or_default()
 }
 
+/// Why a save is refused while Photos shows an edit LightCraft hasn't brought in.
+pub const NEWER_IN_PHOTOS: &str =
+    "Photos has an edit of this photo that LightCraft hasn't brought in yet: choose Photo ▸ Sync with Apple Photos first, so it isn't replaced";
+
 impl PhotosSave {
-    /// Render the edit, write it to a temporary file and hand it to `save`. The file is removed
-    /// afterwards, whatever happened.
-    pub fn run(self, save: &mut Save) -> std::result::Result<(), String> {
+    /// Check that Photos shows nothing LightCraft hasn't brought in, render the edit, write it to
+    /// a temporary file and hand it to `save`. The file is removed afterwards, whatever happened.
+    /// Returns the asset's modification time in Photos after the save, when Photos gives one.
+    pub fn run(self, save: &mut Save, photos: &mut dyn crate::photos_sync::PhotosAccess) -> std::result::Result<Option<f64>, String> {
         let label = self.file_name.clone();
+        let (pending, _) = crate::photos_sync::pending_change(self.sync.as_ref(), &self.uuid, photos).map_err(|e| format!("{label}: {e}"))?;
+        if pending.is_some() {
+            return Err(format!("{label}: {NEWER_IN_PHOTOS}"));
+        }
         let exported = self.export.run().map_err(|e| format!("{label}: {e}"))?;
         let (file, path) = temp_jpeg(self.id).map_err(|e| format!("{label}: {e}"))?;
         let r = (|| {
@@ -98,7 +112,9 @@ impl PhotosSave {
             save(&self.uuid, &path, &self.adjustment)
         })();
         let _ = std::fs::remove_file(&path);
-        r.map_err(|e| format!("{label}: {e}"))
+        r.map_err(|e| format!("{label}: {e}"))?;
+        // when it changed now, so this save isn't taken for an edit made in Photos
+        Ok(photos.state(&self.uuid).ok().and_then(|s| s.modified))
     }
 }
 
@@ -156,22 +172,28 @@ impl Session {
                 skipped.push(Skipped { id, why: "not edited" });
                 continue;
             }
-            let adjustment = adjustment_data(&p.develop);
+            let adjustment = adjustment_data(&p.develop, link.sync.as_ref().and_then(|s| s.base_ms));
             let file_name = p.file_name.clone();
             let export = crate::export::prepare_export(self, id, &options, 1).map_err(|e| EngineError::Other(format!("{file_name}: {e}")))?;
-            saves.push(PhotosSave { id, uuid: link.uuid, file_name, adjustment, export });
+            saves.push(PhotosSave { id, uuid: link.uuid, file_name, adjustment, sync: link.sync, export });
         }
         Ok((saves, skipped))
     }
 
     /// Render and save every edit among `ids` with `save`, one at a time (the command's way; the
     /// app does it on a worker). Returns the photos saved and those skipped.
-    pub fn save_photos_edits(&mut self, ids: &[PhotoId], save: &mut Save) -> Result<(Vec<PhotoId>, Vec<Skipped>)> {
+    pub fn save_photos_edits(
+        &mut self,
+        ids: &[PhotoId],
+        save: &mut Save,
+        photos: &mut dyn crate::photos_sync::PhotosAccess,
+    ) -> Result<(Vec<PhotoId>, Vec<Skipped>)> {
         let (saves, skipped) = self.photos_saves(ids)?;
         let mut done = Vec::with_capacity(saves.len());
         for one in saves {
             let id = one.id;
-            one.run(save).map_err(EngineError::Other)?;
+            let modified = one.run(save, photos).map_err(EngineError::Other)?;
+            self.saved_to_photos(id, modified)?;
             done.push(id);
         }
         Ok((done, skipped))

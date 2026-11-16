@@ -100,7 +100,7 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
             for (id, r) in found {
                 match r {
                     Restored::Settings(s) => settings.push((id, *s)),
-                    Restored::NotLightCraft | Restored::NotStored => not_lightcraft += 1,
+                    Restored::NotLightCraft | Restored::NotStored | Restored::OtherBase => not_lightcraft += 1,
                 }
             }
             match app.session.adopt_restored(settings) {

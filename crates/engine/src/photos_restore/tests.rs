@@ -15,7 +15,7 @@ fn with_exposure(ev: f64) -> DevelopSettings {
 #[test]
 fn what_save_stores_reads_back_as_the_same_settings() {
     let d = with_exposure(0.7);
-    let back = settings_from(ADJUSTMENT_VERSION, &adjustment_data(&d)).unwrap();
+    let back = settings_from(ADJUSTMENT_VERSION, &adjustment_data(&d, None)).unwrap();
     assert_eq!(back, Some(d));
 }
 
@@ -23,7 +23,7 @@ fn what_save_stores_reads_back_as_the_same_settings() {
 /// LightCraft's format is checked, and values are kept in range.
 #[test]
 fn stored_settings_are_checked_like_any_from_outside() {
-    let data = adjustment_data(&with_exposure(0.7));
+    let data = adjustment_data(&with_exposure(0.7), None);
     assert!(settings_from("2", &data).unwrap_err().contains("another version"));
     assert!(settings_from(ADJUSTMENT_VERSION, b"not json").unwrap_err().contains("can't be read"));
     assert!(settings_from(ADJUSTMENT_VERSION, br#"{"app": "Other", "develop": {}}"#).unwrap_err().contains("not LightCraft's"));
@@ -40,7 +40,7 @@ fn a_photos_item_gets_back_the_settings_lightcraft_saved_as_one_undo_step() {
     let library = library();
     let (mut s, _lib) = session("photos-restore", &library);
     let d = proxy(&s, ASSET_D);
-    let stored = adjustment_data(&with_exposure(0.7));
+    let stored = adjustment_data(&with_exposure(0.7), None);
     let asked = std::cell::RefCell::new(Vec::new());
     let mut read = |uuid: &str| -> Result<Option<(String, Vec<u8>)>, String> {
         asked.borrow_mut().push(uuid.to_string());
@@ -97,4 +97,25 @@ fn the_command_says_why_it_could_not_read() {
     let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
     assert!(e.contains(why), "{e}");
     assert!(!s.catalog.photo(d).unwrap().is_edited());
+}
+
+/// Settings build on one version of the photo: saved on the original, they aren't put on a photo
+/// that now builds on an edit Photos made, and the other way round.
+#[test]
+fn settings_are_restored_only_onto_the_version_they_build_on() {
+    use crate::photos_sync::tests::{FakePhotos, jpeg};
+    let library = library();
+    let (mut s, _lib) = session("photos-restore-base", &library);
+    let d = proxy(&s, ASSET_D);
+    s.edit_photos_items(&[d], &mut no_fetch).unwrap();
+    let mut photos = FakePhotos { modified: Some(7.0), edited: true, current: jpeg(30, 20, 90), ..Default::default() };
+    s.sync_photos_items(&[d], &mut photos).unwrap();
+    let on = |base: Option<i64>| adjustment_data(&with_exposure(0.4), base);
+    let read = |data: Vec<u8>| move |_: &str| -> Result<Option<(String, Vec<u8>)>, String> { Ok(Some((ADJUSTMENT_VERSION.into(), data.clone()))) };
+    let (restored, skipped) = s.restore_photos_edits(&[d], &mut read(on(None))).unwrap();
+    assert!(restored.is_empty());
+    assert_eq!(skipped[0].why, super::OTHER_BASE);
+    let (restored, _) = s.restore_photos_edits(&[d], &mut read(on(Some(7_000)))).unwrap();
+    assert_eq!(restored, [d]);
+    assert_eq!(s.catalog.photo(d).unwrap().develop.light.exposure, 0.4);
 }

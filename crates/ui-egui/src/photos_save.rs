@@ -21,8 +21,10 @@ pub struct PhotosSaves {
 }
 
 struct Running {
+    id: lightcraft_catalog::PhotoId,
     file_name: String,
-    rx: Receiver<Result<(), String>>,
+    /// The asset's modification time in Photos after the save.
+    rx: Receiver<Result<Option<f64>, String>>,
     _guard: TaskGuard,
 }
 
@@ -59,7 +61,7 @@ fn start_next(app: &mut LightcraftApp) {
         return;
     }
     let Some(save) = app.photos_save.queue.pop_front() else { return };
-    let file_name = save.file_name.clone();
+    let (id, file_name) = (save.id, save.file_name.clone());
     let (tx, rx) = std::sync::mpsc::channel();
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let label = format!("{} {file_name}", crate::i18n::tr("Saving to Apple Photos:"));
@@ -67,10 +69,12 @@ fn start_next(app: &mut LightcraftApp) {
     let handle = guard.handle();
     std::thread::spawn(move || {
         let mut progress = |f: f64| handle.progress((f * 1000.0).round() as u64, 1000);
+        let mut checked = |_: f64| {};
+        let mut photos = lightcraft_engine::photos_sync::PhotoKitAccess { cancel: &cancel, progress: &mut checked };
         let mut to_photos = lightcraft_engine::photos_save::photokit_save(&cancel, &mut progress);
-        let _ = tx.send(save.run(&mut to_photos));
+        let _ = tx.send(save.run(&mut to_photos, &mut photos));
     });
-    app.photos_save.running = Some(Running { file_name, rx, _guard: guard });
+    app.photos_save.running = Some(Running { id, file_name, rx, _guard: guard });
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -89,8 +93,8 @@ pub fn poll(app: &mut LightcraftApp, ctx: &egui::Context) {
         }
         Err(TryRecvError::Disconnected) => Err(crate::i18n::tr("Saving to Apple Photos stopped").to_string()),
     };
-    let Some(Running { file_name, .. }) = app.photos_save.running.take() else { return };
-    match end {
+    let Some(Running { id, file_name, .. }) = app.photos_save.running.take() else { return };
+    match end.and_then(|modified| app.session.saved_to_photos(id, modified).map_err(|e| e.to_string())) {
         Ok(()) => app.toast(ctx, format!("{} {file_name}", crate::i18n::tr("Saved to Apple Photos:"))),
         Err(e) => app.toast(ctx, e),
     }

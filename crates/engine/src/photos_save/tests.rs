@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use super::{ADJUSTMENT_FORMAT, MAX_ADJUSTMENT_BYTES, adjustment_data};
 use crate::photos_edit::tests::{ASSET_D, library, no_fetch, proxy, session};
+use crate::photos_sync::tests::FakePhotos;
 
 /// What a fake [`super::Save`] was given.
 #[derive(Debug, Default)]
@@ -33,7 +34,7 @@ fn an_edited_photos_copy_is_rendered_as_a_jpeg_and_handed_to_photos_with_its_set
         };
         Ok(())
     };
-    let (done, skipped) = s.save_photos_edits(&[d], &mut save).unwrap();
+    let (done, skipped) = s.save_photos_edits(&[d], &mut save, &mut FakePhotos::default()).unwrap();
     assert_eq!((done, skipped), (vec![d], vec![]));
     assert_eq!(given.uuid, ASSET_D, "onto the asset it was copied from");
     assert!(given.jpeg.starts_with(&[0xff, 0xd8]), "a JPEG");
@@ -53,11 +54,11 @@ fn photos_not_copied_from_photos_or_not_edited_are_skipped() {
     let d = proxy(&s, ASSET_D);
     let mut never = |_: &str, _: &std::path::Path, _: &[u8]| -> Result<(), String> { panic!("nothing to save") };
     // a proxy (not copied yet), then an unedited copy
-    let (done, skipped) = s.save_photos_edits(&[d], &mut never).unwrap();
+    let (done, skipped) = s.save_photos_edits(&[d], &mut never, &mut FakePhotos::default()).unwrap();
     assert!(done.is_empty());
     assert_eq!(skipped[0].why, "not copied from Apple Photos");
     s.edit_photos_items(&[d], &mut no_fetch).unwrap();
-    let (done, skipped) = s.save_photos_edits(&[d], &mut never).unwrap();
+    let (done, skipped) = s.save_photos_edits(&[d], &mut never, &mut FakePhotos::default()).unwrap();
     assert!(done.is_empty());
     assert_eq!(skipped[0].why, "not edited");
 }
@@ -75,16 +76,16 @@ fn a_refused_save_is_an_error_and_leaves_no_file() {
         path = p.into();
         Err("not allowed".into())
     };
-    let e = s.save_photos_edits(&[d], &mut refuse).unwrap_err().to_string();
+    let e = s.save_photos_edits(&[d], &mut refuse, &mut FakePhotos::default()).unwrap_err().to_string();
     assert!(e.contains("not allowed"), "{e}");
     assert!(!path.as_os_str().is_empty() && !path.exists(), "the temporary JPEG is removed");
 }
 
 #[test]
 fn settings_too_large_for_photos_are_left_out() {
-    let small = adjustment_data(&json!({"a": 1}));
+    let small = adjustment_data(&json!({"a": 1}), None);
     assert!(serde_json::from_slice::<Value>(&small).unwrap()["develop"].is_object());
-    let big = adjustment_data(&json!({"a": "x".repeat(MAX_ADJUSTMENT_BYTES)}));
+    let big = adjustment_data(&json!({"a": "x".repeat(MAX_ADJUSTMENT_BYTES)}), None);
     let big: Value = serde_json::from_slice(&big).unwrap();
     assert_eq!(big["app"], "LightCraft");
     assert!(big.get("develop").is_none());

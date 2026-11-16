@@ -91,7 +91,7 @@ fn editing_a_photos_item_copies_its_original_into_the_library_and_keeps_what_was
     assert_eq!(Path::new(path).parent(), Some(lib.join("Originals").join("From Apple Photos").as_path()));
     assert_eq!(std::fs::read(path).unwrap(), std::fs::read(&original).unwrap(), "a copy of the original");
     assert!(p.in_library(), "a library photo now");
-    assert_eq!(p.from_photos, Some(PhotosLink { library: library.root.to_string_lossy().into(), uuid: ASSET_D.into() }));
+    assert_eq!(p.from_photos, Some(PhotosLink { library: library.root.to_string_lossy().into(), uuid: ASSET_D.into(), ..Default::default() }));
     assert_eq!(p.rating, 4);
     assert!(p.is_edited(), "the edit made on the proxy stays");
     assert_eq!(p.file_name, Path::new(path).file_name().unwrap().to_string_lossy());
