@@ -276,3 +276,58 @@ fn reading_edits_from_photos_runs_in_the_background_and_says_how_it_went() {
     assert!(toast.contains(why), "{toast}");
     assert!(!h.app.session.catalog.photo(u1).unwrap().is_edited());
 }
+
+/// A photo copied from Photos is checked against Photos once a session when it is open in the Edit
+/// tools, on a worker under a row in the activity stack, saying nothing when Photos can't be asked
+/// (here, off macOS or without Photos access); Sync with Apple Photos asks again and says why.
+#[test]
+fn a_photo_from_photos_is_checked_once_in_the_edit_tools_and_sync_says_how_it_went() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-photos-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let original = dir.join("Test.photoslibrary").join("originals").join("0").join("U1.jpg");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    let pixels = lightcraft_raster::Rgba8::from_bytes(4, 3, &[128u8; 4 * 3 * 4]).unwrap();
+    std::fs::write(&original, lightcraft_engine::export::encode_image(&pixels, &lightcraft_engine::export::ExportOptions::default()).unwrap())
+        .unwrap();
+    let mut session = lightcraft_engine::Session::new().with_fs();
+    session.open_library(dir.join("lib"), false).unwrap();
+    let services = Services { png: None, local_places: Some(Vec::new()), ..Default::default() };
+    let mut h = Headless::new(LightcraftApp::new(session, services), [1200.0, 1000.0], 1.0);
+    let item = PhotosItem {
+        uuid: "U1".into(),
+        file_name: "U1.JPG".into(),
+        format: "JPG".into(),
+        width: 4,
+        height: 3,
+        original: Some(original.to_string_lossy().into()),
+        ..Default::default()
+    };
+    let library = dir.join("Test.photoslibrary").to_string_lossy().into_owned();
+    h.app.session.show_photos(PhotosRead { library, view: PhotosView::All, items: vec![item], albums: Vec::new(), warnings: Vec::new() }).unwrap();
+    let u1 = h.app.session.catalog.photos().next().unwrap().id;
+    let mut no_fetch = |_: &str, _: &mut dyn std::io::Write| -> Result<u64, String> { Err("on this Mac".into()) };
+    h.app.session.edit_photos_items(&[u1], &mut no_fetch).unwrap();
+    h.app.session.execute("library.select", &json!({"ids": [u1.0]})).unwrap();
+
+    // opened in the Edit tools: checked by itself, once
+    h.request("ui.set", json!({"view": "detail"}), T);
+    h.app.ui.right = crate::state::RightPanel::Edit;
+    h.step();
+    let list = h.app.session.activity.list();
+    assert!(!h.app.photos_sync.busy() || list.iter().any(|t| t.kind == "applePhotosSync"), "{list:?}");
+    h.settle(SETTLE);
+    assert!(!h.app.photos_sync.busy());
+    assert!(h.app.session.activity.list().iter().all(|t| t.kind != "applePhotosSync"), "its row went");
+    assert!(h.app.ui.toast.is_none(), "a check made by itself that can't ask Photos says nothing");
+    h.step();
+    assert!(!h.app.photos_sync.busy(), "not checked again this session");
+
+    // asked for: says why it couldn't
+    let r = h.app.run("applePhotos.sync", json!({"ids": [u1.0]})).unwrap();
+    assert_eq!(r["queued"], json!([u1.0]), "{r}");
+    h.settle(SETTLE);
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
+    assert!(toast.contains(why), "{toast}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

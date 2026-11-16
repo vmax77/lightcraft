@@ -202,9 +202,34 @@ Photos won't let apps edit (a shared album's), is refused. Photos that weren't c
 no edits, are skipped and said why. The asset is found by its UUID, so a library that is a copy of the System
 Photo Library saves to the System Photo Library's asset.
 
-Not yet: an edit made later in Photos, or another app's, is not seen by LightCraft, and saving again replaces it,
-built from the original; no HDR (gain map) rendition; Live Photos keep their motion unedited; libraries other than
-the System Photo Library.
+Saving never replaces an edit made in Photos that LightCraft hasn't brought in yet ([Edits made in
+Photos](#edits-made-in-photos)): it asks for Photo ▸ Sync with Apple Photos first. Not yet: no HDR (gain map)
+rendition; Live Photos keep their motion unedited; libraries other than the System Photo Library.
+
+## Edits made in Photos
+
+Whichever app edited a photo last, that edit shows, and neither is lost. Photos' own edits can't become LightCraft
+sliders (Photos keeps them in its own format), so when Photos shows an edit LightCraft didn't make, that **version of
+the photo** becomes the photo's file in LightCraft (`Originals/From Apple Photos/<name> (Photos edit).jpeg`; the
+earlier file stays), and LightCraft's settings build on it:
+
+- Settings never saved to Photos stay on top: Photos' version doesn't have them.
+- Settings saved to Photos are already in its version (Photos edits on top of the version LightCraft saved), so
+  they start again from the default. If they changed after that save, they are first kept as the snapshot
+  *LightCraft edit before the Photos edit*.
+- Photos went back to the original (Revert to Original) while LightCraft builds on an earlier Photos edit: the
+  original becomes the photo's file again, by the same rules.
+
+When it happens: once a session when such a photo is open in the Edit tools (quietly; on a worker under an activity
+row), and with **Photo ▸ Sync with Apple Photos** (`applePhotos.sync`), which says how it went. Photos is asked
+only when the asset changed since LightCraft last looked (`PHAsset.modificationDate`), and then whose edit it shows
+(LightCraft's adjustment data, as for Restore); a change that isn't a new edit (a favourite, a title, LightCraft's own
+save) is noted and changes nothing. A version found while a slider is being dragged waits for the drag to end.
+Bringing in Photos' version isn't an undo step (as copying a Photos item isn't). Restore puts settings back only onto
+the version of the photo they build on (stored with them as `base`).
+
+Building on Photos' version means editing its rendered JPEG or HEIC, not the raw original: there is less room for
+large exposure or colour changes. Photos shown but not yet copied still show their original, not Photos' edit.
 
 ## Reading an edit back from Photos
 
@@ -234,3 +259,9 @@ saving: System Photo Library only, packaged macOS app only.
    back; Edit ▸ Undo takes them away again.
 8. Edit the same photo in Photos (any adjustment), then Restore Edit again: it is skipped, saying the edit in
    Photos was not saved by LightCraft.
+9. Open that photo in LightCraft's Edit tools (or Photo ▸ Sync with Apple Photos): it now shows Photos' edit, and
+   the toast says the edit was brought in. Its LightCraft settings started again from the default (they were saved
+   in step 2); with changes made after the save, they are in the snapshot *LightCraft edit before the Photos
+   edit*.
+10. Raise the exposure in LightCraft and save: Photos shows both edits. In Photos, Revert to Original, then sync in
+    LightCraft: the original comes back.

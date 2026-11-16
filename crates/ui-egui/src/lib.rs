@@ -40,6 +40,7 @@ pub mod panels;
 pub mod photos_edit;
 pub mod photos_restore;
 pub mod photos_save;
+pub mod photos_sync;
 pub mod photos_view;
 pub mod pick;
 pub mod recheck;
@@ -340,6 +341,8 @@ pub struct LightcraftApp {
     pub photos_save: photos_save::PhotosSaves,
     /// Edits being read back from Apple Photos.
     pub photos_restore: Option<photos_restore::Running>,
+    /// Photos copied from Apple Photos being checked against Photos.
+    pub photos_sync: photos_sync::PhotosSyncs,
     /// Scans stopped without waiting for their workers: each channel is kept until its worker ends, so
     /// the probes it took from the session come back.
     pub(crate) scans_stopping: import::StoppingScans,

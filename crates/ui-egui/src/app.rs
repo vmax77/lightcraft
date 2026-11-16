@@ -116,6 +116,7 @@ impl LightcraftApp {
             photos_edit: Default::default(),
             photos_save: Default::default(),
             photos_restore: None,
+            photos_sync: Default::default(),
             scans_stopping: Default::default(),
             waiting_import: Default::default(),
             sync: None,

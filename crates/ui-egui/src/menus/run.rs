@@ -1326,6 +1326,7 @@ fn ui_commands_10(app: &mut LightcraftApp, ctx: &egui::Context, id: &str, p: &Va
         "applePhotos.saveEdit" => crate::photos_save::start(app, p),
         // Photos is asked on a worker, for the same reason
         "applePhotos.restoreEdit" => crate::photos_restore::start(app, p),
+        "applePhotos.sync" => crate::photos_sync::start(app, p),
         "library.browse" if !cfg!(target_arch = "wasm32") => {
             if crate::lightroom_import::is_running(app) {
                 return Some(Err("finish Lightroom catalog import before browsing folders".into()));

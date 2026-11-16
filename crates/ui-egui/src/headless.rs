@@ -399,6 +399,7 @@ impl Headless {
             || self.app.photos_edit.busy()
             || self.app.photos_save.busy()
             || self.app.photos_restore.is_some()
+            || self.app.photos_sync.busy()
             || self.app.sync.is_some()
             || self.app.sync_run.is_some()
             || self.app.import.is_some()
