@@ -99,6 +99,8 @@ pub enum DownloadError {
     NotFound,
     /// The asset has no original photo or video resource.
     NoOriginal,
+    /// The asset has no edited version ([`download_current`]).
+    NoEdit,
     /// Stopped by the caller.
     Cancelled,
     /// Nothing arrived for [`DOWNLOAD_IDLE`].
@@ -115,6 +117,7 @@ impl std::fmt::Display for DownloadError {
             Self::PhotoKit(e) => e.fmt(f),
             Self::NotFound => f.write_str("the photo is not in the System Photo Library"),
             Self::NoOriginal => f.write_str("Photos has no original for this item"),
+            Self::NoEdit => f.write_str("Photos has no edited version of this item"),
             Self::Cancelled => f.write_str("the download was cancelled"),
             Self::TimedOut => f.write_str("the download from iCloud stalled"),
             Self::Failed(why) => write!(f, "Photos could not fetch the original: {why}"),
@@ -269,6 +272,33 @@ pub fn read_adjustment(
     }
 }
 
+/// Whether Photos shows an edit of an asset, and when the asset last changed ([`edit_state`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EditState {
+    /// `PHAsset.modificationDate`, seconds since 1970-01-01 UTC. Any change counts (an edit, a
+    /// favourite, a title), so it says when to look again, not what changed.
+    pub modified: Option<f64>,
+    /// Photos has an edited version of it (an adjustment data or full-size photo resource).
+    pub edited: bool,
+}
+
+/// [`EditState`] of the asset `local_id`, without downloading anything.
+pub fn edit_state(local_id: &str) -> Result<EditState, EditError> {
+    imp::edit_state(local_id)
+}
+
+/// Fetch the edited version of the asset `local_id` as Photos shows it (its full-size photo
+/// resource), from iCloud when it is not on this Mac, writing its bytes to `out` as they arrive.
+/// [`DownloadError::NoEdit`] for an unedited asset. Otherwise as [`download_original`].
+pub fn download_current(
+    local_id: &str,
+    out: &mut dyn std::io::Write,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<u64, DownloadError> {
+    imp::download_current(local_id, out, cancel, progress)
+}
+
 /// Photo, video or something else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaKind {
@@ -376,6 +406,19 @@ mod imp {
         Err(PhotoKitError::NotMacOs.into())
     }
 
+    pub fn edit_state(_: &str) -> Result<super::EditState, super::EditError> {
+        Err(PhotoKitError::NotMacOs.into())
+    }
+
+    pub fn download_current(
+        _: &str,
+        _: &mut dyn std::io::Write,
+        _: &std::sync::atomic::AtomicBool,
+        _: &mut dyn FnMut(f64),
+    ) -> Result<u64, super::DownloadError> {
+        Err(PhotoKitError::NotMacOs.into())
+    }
+
     pub fn read_adjustment(
         _: &str,
         _: &str,
@@ -457,6 +500,9 @@ mod tests {
         let expected = if cfg!(target_os = "macos") { PhotoKitError::NoUsageDescription } else { PhotoKitError::NotMacOs };
         assert_eq!(save_edit("A/L0/001", &jpeg, &small, &cancel, &mut progress), Err(EditError::PhotoKit(expected)));
         assert_eq!(read_adjustment("A/L0/001", "x", &cancel, &mut progress), Err(EditError::PhotoKit(expected)));
+        assert_eq!(edit_state("A/L0/001"), Err(EditError::PhotoKit(expected)));
+        let mut out = Vec::new();
+        assert_eq!(download_current("A/L0/001", &mut out, &cancel, &mut progress), Err(DownloadError::PhotoKit(expected)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

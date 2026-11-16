@@ -313,24 +313,70 @@ fn original_of(asset: &PHAsset) -> Option<Retained<PHAssetResource>> {
     })
 }
 
+/// The resource of `asset` whose type is one of `kinds`, in that order of preference.
+fn resource_of(asset: &PHAsset, kinds: &[PHAssetResourceType]) -> Option<Retained<PHAssetResource>> {
+    // SAFETY: a class method taking an asset; it returns an array of resources (no fetch result).
+    let resources = unsafe { PHAssetResource::assetResourcesForAsset(asset) };
+    kinds.iter().find_map(|kind| {
+        resources.iter().find(|r| {
+            // SAFETY: a getter without arguments returning an integer enum.
+            let t = unsafe { r.r#type() };
+            t == *kind
+        })
+    })
+}
+
+/// The asset `local_id` once read access has been checked.
+fn readable_asset(local_id: &str) -> Result<Option<Retained<PHAsset>>, PhotoKitError> {
+    let access = access()?;
+    if !access.can_read() {
+        return Err(PhotoKitError::NotAllowed(access));
+    }
+    let ids = NSArray::from_retained_slice(&[NSString::from_str(local_id)]);
+    // SAFETY: a class method taking an array of NSString identifiers and optional options.
+    let found = unsafe { PHAsset::fetchAssetsWithLocalIdentifiers_options(&ids, None) };
+    Ok(each(&found, 0, 1).into_iter().next())
+}
+
+pub fn edit_state(local_id: &str) -> Result<super::EditState, super::EditError> {
+    let asset = readable_asset(local_id)?.ok_or(super::EditError::NotFound)?;
+    // SAFETY: a getter without arguments returning an optional NSDate.
+    let modified = unsafe { asset.modificationDate() }.map(|d| d.timeIntervalSince1970()).filter(|s| s.is_finite());
+    let edited = resource_of(&asset, &[PHAssetResourceType::FullSizePhoto, PHAssetResourceType::AdjustmentData]).is_some();
+    Ok(super::EditState { modified, edited })
+}
+
 pub fn download_original(
     local_id: &str,
     out: &mut dyn std::io::Write,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &mut dyn FnMut(f64),
 ) -> Result<u64, super::DownloadError> {
+    let asset = readable_asset(local_id)?.ok_or(super::DownloadError::NotFound)?;
+    let resource = original_of(&asset).ok_or(super::DownloadError::NoOriginal)?;
+    download(&resource, out, cancel, progress)
+}
+
+pub fn download_current(
+    local_id: &str,
+    out: &mut dyn std::io::Write,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<u64, super::DownloadError> {
+    let asset = readable_asset(local_id)?.ok_or(super::DownloadError::NotFound)?;
+    let resource = resource_of(&asset, &[PHAssetResourceType::FullSizePhoto]).ok_or(super::DownloadError::NoEdit)?;
+    download(&resource, out, cancel, progress)
+}
+
+/// Write the bytes of `resource` to `out` as they arrive (from iCloud when needed).
+fn download(
+    resource: &PHAssetResource,
+    out: &mut dyn std::io::Write,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<u64, super::DownloadError> {
     use super::DownloadError;
     use std::sync::atomic::Ordering;
-
-    let access = access()?;
-    if !access.can_read() {
-        return Err(PhotoKitError::NotAllowed(access).into());
-    }
-    let ids = NSArray::from_retained_slice(&[NSString::from_str(local_id)]);
-    // SAFETY: a class method taking an array of NSString identifiers and optional options.
-    let found = unsafe { PHAsset::fetchAssetsWithLocalIdentifiers_options(&ids, None) };
-    let asset = each(&found, 0, 1).into_iter().next().ok_or(DownloadError::NotFound)?;
-    let resource = original_of(&asset).ok_or(DownloadError::NoOriginal)?;
 
     let (tx, rx) = mpsc::channel::<Part>();
     let (on_data, on_progress, on_done) = (tx.clone(), tx.clone(), tx);
@@ -360,7 +406,7 @@ pub fn download_original(
     // returning, and they only send owned values on a channel (a send to a dropped receiver is ignored).
     let manager = unsafe { objc2_photos::PHAssetResourceManager::defaultManager() };
     let request =
-        unsafe { manager.requestDataForAssetResource_options_dataReceivedHandler_completionHandler(&resource, Some(&options), &data, &done) };
+        unsafe { manager.requestDataForAssetResource_options_dataReceivedHandler_completionHandler(resource, Some(&options), &data, &done) };
 
     let mut written: u64 = 0;
     let mut failure: Option<DownloadError> = None;
