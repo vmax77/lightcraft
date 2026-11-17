@@ -1323,7 +1323,52 @@ pub fn context_menu(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     context_menu_file_actions(app, ui);
     context_menu_stack_and_edits(app, ui, id);
     context_menu_locate_and_export(app, ui, id);
+    context_menu_apple_photos(app, ui, id);
     context_menu_delete(app, ui);
+}
+
+/// Photo ▸ Apple Photos for a photo from Photos (a proxy, or a copy made to edit it): the same
+/// commands, each enabled where it applies to the photo right-clicked, with its shortcut. Not
+/// shown for other photos, nor on the web.
+fn context_menu_apple_photos(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
+    let Some(p) = app.session.catalog.photo(id) else { return };
+    let proxy = matches!(p.source, lightcraft_catalog::Source::ApplePhotos { .. });
+    let copy = p.from_photos.is_some();
+    if !proxy && !copy {
+        return;
+    }
+    let edited = p.is_edited();
+    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+    let items = [
+        ("applePhotos.edit", "Edit Apple Photos Item", proxy, "button:contextApplePhotosEdit"),
+        ("applePhotos.saveEdit", "Save Edit to Apple Photos", copy && edited, "button:contextApplePhotosSave"),
+        ("applePhotos.restoreEdit", "Restore Edit from Apple Photos", true, "button:contextApplePhotosRestore"),
+        ("applePhotos.sync", "Sync with Apple Photos", copy, "button:contextApplePhotosSync"),
+    ];
+    let mut run = None;
+    let menu = crate::widgets::menu_button(ui, crate::i18n::tr("Apple Photos"), |ui| {
+        for (cmd, label, enabled, widget) in items {
+            let mut button = egui::Button::new(crate::i18n::tr(label));
+            if let Some(sc) = crate::shortcuts::shortcut_of(&app.ui.settings.keymap, cmd) {
+                button = button.shortcut_text(crate::menubar::shortcut_text(sc, mac));
+            }
+            let r = ui.add_enabled(enabled, button);
+            register(ui, widget, r.rect);
+            if r.clicked() {
+                run = Some(cmd);
+            }
+        }
+    });
+    register(ui, "button:contextApplePhotos", menu.response.rect);
+    // the photo right-clicked is in the selection (see `context_menu_open_and_edit`)
+    if let Some(cmd) = run
+        && let Err(e) = app.run(cmd, json!({}))
+    {
+        app.toast(ui.ctx(), e);
+    }
 }
 
 fn context_menu_open_and_edit(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {

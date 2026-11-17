@@ -88,8 +88,7 @@ pub fn adjustment_data(develop: &impl serde::Serialize, base_ms: Option<i64>) ->
 }
 
 /// Why a save is refused while Photos shows an edit LightCraft hasn't brought in.
-pub const NEWER_IN_PHOTOS: &str =
-    "Photos has an edit of this photo that LightCraft hasn't brought in yet: choose Photo ▸ Sync with Apple Photos first, so it isn't replaced";
+pub const NEWER_IN_PHOTOS: &str = "Photos has an edit of this photo that LightCraft hasn't brought in yet: choose Photo ▸ Apple Photos ▸ Sync with Apple Photos first, so it isn't replaced";
 
 impl PhotosSave {
     /// Check that Photos shows nothing LightCraft hasn't brought in, render the edit, write it to

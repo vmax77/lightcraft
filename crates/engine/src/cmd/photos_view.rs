@@ -153,7 +153,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "applePhotos.edit",
             "Edit Apple Photos Item",
-            [],
+            ["Photo", "Apple Photos"],
             None,
             "{ids?: photo ids (default: the selection)} — make each Apple Photos item a library photo to edit: its original is copied into the library's Originals/From Apple Photos/ and compared byte for byte, then the photo points at the copy, keeping its ratings and edits; nothing is written in the Photos library. An original only in iCloud is downloaded first (System Photo Library, macOS app only). Others are left as they are → {copied: [{id, path}]}",
             always,
@@ -162,7 +162,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "applePhotos.saveEdit",
             "Save Edit to Apple Photos",
-            ["Photo"],
+            ["Photo", "Apple Photos"],
             Some("Cmd+Alt+Shift+P"),
             "{ids?: photo ids (default: the selection)} — for each edited photo that was copied from Apple Photos to be edited, render it (full-size JPEG, Display P3) and put it on the asset it came from, in place of what Photos showed; Photos keeps the original (Revert to Original) and LightCraft's settings go with the edit. System Photo Library only, macOS app only; macOS asks to allow each change. Others are skipped → {saved: [id], skipped: [{id, why}]}",
             always,
@@ -171,7 +171,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "applePhotos.restoreEdit",
             "Restore Edit from Apple Photos",
-            ["Photo"],
+            ["Photo", "Apple Photos"],
             None,
             "{ids?: photo ids (default: the selection)} — for each Apple Photos item (or copy made of one) whose edit in Photos was saved there by LightCraft (Save Edit to Apple Photos), read back the develop settings stored with it and apply them, as one undo step; an edit made since in Photos or another app is not LightCraft's and is skipped. System Photo Library only, macOS app only; nothing is changed in Photos → {restored: [id], skipped: [{id, why}]}",
             always,
@@ -180,7 +180,7 @@ pub fn specs() -> Vec<CommandSpec> {
         cmd!(
             "applePhotos.sync",
             "Sync with Apple Photos",
-            ["Photo"],
+            ["Photo", "Apple Photos"],
             None,
             "{ids?: photo ids (default: the selection)} — for each photo copied from Apple Photos, ask Photos whether it shows an edit LightCraft didn't make (or went back to the original) since LightCraft last looked; if so, that version becomes the photo's file and LightCraft's settings build on it: settings never saved to Photos stay on top, settings saved there (already in Photos' version) start again from the default, kept as a snapshot when they changed since. Not an undo step. System Photo Library only, macOS app only → {photos: [{id, changed, keptSettings?, snapshot?}]}",
             always,

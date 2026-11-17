@@ -331,3 +331,69 @@ fn a_photo_from_photos_is_checked_once_in_the_edit_tools_and_sync_says_how_it_we
     assert!(toast.contains(why), "{toast}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The Apple Photos commands are under Photo ▸ Apple Photos, and in the right-click menu of a photo
+/// from Photos in the Edit tools' filmstrip, each enabled where it applies to that photo.
+#[test]
+fn apple_photos_commands_are_a_submenu_and_in_the_filmstrips_right_click_menu() {
+    for id in ["applePhotos.edit", "applePhotos.saveEdit", "applePhotos.restoreEdit", "applePhotos.sync"] {
+        assert_eq!(lightcraft_engine::cmd::find_command(id).unwrap().menu, ["Photo", "Apple Photos"], "{id}");
+    }
+    let dir = std::env::temp_dir().join(format!("lc-ui-photos-menu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let original = dir.join("Test.photoslibrary").join("originals").join("0").join("U1.jpg");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    let pixels = lightcraft_raster::Rgba8::from_bytes(4, 3, &[128u8; 4 * 3 * 4]).unwrap();
+    std::fs::write(&original, lightcraft_engine::export::encode_image(&pixels, &lightcraft_engine::export::ExportOptions::default()).unwrap())
+        .unwrap();
+    let mut session = lightcraft_engine::Session::new().with_fs();
+    session.open_library(dir.join("lib"), false).unwrap();
+    let services = Services { png: None, local_places: Some(Vec::new()), ..Default::default() };
+    let mut h = Headless::new(LightcraftApp::new(session, services), [1300.0, 1000.0], 1.0);
+    let item = |uuid: &str, original: Option<String>| PhotosItem {
+        uuid: uuid.into(),
+        file_name: format!("{uuid}.JPG"),
+        format: "JPG".into(),
+        width: 4,
+        height: 3,
+        original,
+        ..Default::default()
+    };
+    let library = dir.join("Test.photoslibrary").to_string_lossy().into_owned();
+    let items = vec![item("U1", Some(original.to_string_lossy().into())), item("U2", None)];
+    h.app.session.show_photos(PhotosRead { library, view: PhotosView::All, items, albums: Vec::new(), warnings: Vec::new() }).unwrap();
+    let id_of = |h: &Headless, uuid: &str| {
+        h.app.session.catalog.photos().find(|p| matches!(&p.source, lightcraft_catalog::Source::ApplePhotos { uuid: u, .. } if u == uuid)).unwrap().id
+    };
+    let (u1, u2) = (id_of(&h, "U1"), id_of(&h, "U2"));
+    let mut no_fetch = |_: &str, _: &mut dyn std::io::Write| -> Result<u64, String> { Err("on this Mac".into()) };
+    h.app.session.edit_photos_items(&[u1], &mut no_fetch).unwrap();
+    h.app.session.execute("library.select", &json!({"ids": [u1.0]})).unwrap();
+    h.app.session.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
+    h.request("ui.set", json!({"view": "detail"}), T);
+    h.app.ui.right = crate::state::RightPanel::Edit;
+    h.settle(SETTLE);
+    h.app.ui.toast = None;
+
+    // right-click the edited copy's filmstrip cell: Apple Photos ▸ Save Edit runs for it
+    let r = h.request("ui.clickWidget", json!({"id": format!("film:{}", u1.0), "button": "right"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(has(&h, "button:contextApplePhotos"), "the Apple Photos submenu is there");
+    click(&mut h, "button:contextApplePhotos");
+    for item in ["Edit", "Save", "Restore", "Sync"] {
+        assert!(has(&h, &format!("button:contextApplePhotos{item}")), "{item}");
+    }
+    click(&mut h, "button:contextApplePhotosSave");
+    h.settle(SETTLE);
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
+    assert!(toast.contains(why), "Save Edit ran: {toast}");
+
+    // a proxy offers it too; a photo not from Photos has no such submenu (here: none to try)
+    let r = h.request("ui.clickWidget", json!({"id": format!("film:{}", u2.0), "button": "right"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    assert!(has(&h, "button:contextApplePhotos"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

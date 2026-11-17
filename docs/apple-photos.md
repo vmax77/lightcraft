@@ -169,6 +169,13 @@ Report the toast or JSON, and the macOS and Photos versions.
 - Quitting the desktop app while Photos is importing doesn't wait for it: Photos may still finish the import,
   but LightCraft won't show the outcome.
 
+## Where the commands are
+
+**Photo ▸ Apple Photos** holds them all: Edit Apple Photos Item, Save Edit to Apple Photos (⌘⌥⇧P), Restore Edit
+from Apple Photos and Sync with Apple Photos. The same submenu is in the right-click menu of a photo from Photos, in
+the grid and in the filmstrip under the Edit tools, each item enabled where it applies to that photo (Edit for a
+photo not copied yet, Save for an edited copy, Sync for a copy); other photos don't show it.
+
 ## What comes over from Photos
 
 A photo shown from Photos (the sidebar's Apple Photos section) carries what Photos says about it: its title,
@@ -180,7 +187,7 @@ LightCraft leaves its metadata alone. Not carried over yet: people, place names 
 ## Saving an edit back to Photos
 
 A photo copied out of Photos to be edited (issue #1622: the first edit of an item from the sidebar's Apple
-Photos section) can put its edit back on the asset it came from: **Photo ▸ Save Edit to Apple Photos**
+Photos section) can put its edit back on the asset it came from: **Photo ▸ Apple Photos ▸ Save Edit to Apple Photos**
 (⌘⌥⇧P / Ctrl+Alt+Shift+P, `applePhotos.saveEdit`). Photos then shows the edited photo in place of the asset's current version, in every
 album and on every device that syncs with iCloud Photos. Photos keeps the original: **Image ▸ Revert to
 Original** in Photos brings it back. Unlike Add to Apple Photos, nothing new is added to the library.
@@ -203,7 +210,7 @@ no edits, are skipped and said why. The asset is found by its UUID, so a library
 Photo Library saves to the System Photo Library's asset.
 
 Saving never replaces an edit made in Photos that LightCraft hasn't brought in yet ([Edits made in
-Photos](#edits-made-in-photos)): it asks for Photo ▸ Sync with Apple Photos first. Not yet: no HDR (gain map)
+Photos](#edits-made-in-photos)): it asks for Photo ▸ Apple Photos ▸ Sync with Apple Photos first. Not yet: no HDR (gain map)
 rendition; Live Photos keep their motion unedited; libraries other than the System Photo Library.
 
 ## Edits made in Photos
@@ -221,7 +228,7 @@ earlier file stays), and LightCraft's settings build on it:
   original becomes the photo's file again, by the same rules.
 
 When it happens: once a session when such a photo is open in the Edit tools (quietly; on a worker under an activity
-row), and with **Photo ▸ Sync with Apple Photos** (`applePhotos.sync`), which says how it went. Photos is asked
+row), and with **Photo ▸ Apple Photos ▸ Sync with Apple Photos** (`applePhotos.sync`), which says how it went. Photos is asked
 only when the asset changed since LightCraft last looked (`PHAsset.modificationDate`), and then whose edit it shows
 (LightCraft's adjustment data, as for Restore); a change that isn't a new edit (a favourite, a title, LightCraft's own
 save) is noted and changes nothing. A version found while a slider is being dragged waits for the drag to end.
@@ -233,7 +240,7 @@ large exposure or colour changes. Photos shown but not yet copied still show the
 
 ## Reading an edit back from Photos
 
-**Photo ▸ Restore Edit from Apple Photos** (`applePhotos.restoreEdit`) gives a photo shown from Photos, or the copy
+**Photo ▸ Apple Photos ▸ Restore Edit from Apple Photos** (`applePhotos.restoreEdit`) gives a photo shown from Photos, or the copy
 made to edit it, the develop settings LightCraft stored when it saved the edit Photos shows. Editing carries on
 where it was: on another Mac that syncs with iCloud Photos, or after the LightCraft copy is gone. It is one undo
 step, and nothing changes in Photos.
@@ -250,16 +257,16 @@ saving: System Photo Library only, packaged macOS app only.
 
 1. In the sidebar's Apple Photos section, open the System Photo Library and pick a photo. Raise its exposure in
    the Edit tools: an activity row copies it into the library.
-2. Photo ▸ Save Edit to Apple Photos. Allow access to Photos if asked, then allow the change.
+2. Photo ▸ Apple Photos ▸ Save Edit to Apple Photos. Allow access to Photos if asked, then allow the change.
 3. The toast says *Saved to Apple Photos*. In Photos, the photo shows the edit and has **Revert to Original**.
 4. Revert in Photos, then save again from LightCraft: the edit comes back.
 5. Deny the change when macOS asks: the toast says LightCraft was not allowed, and Photos is unchanged.
 6. Pick a photo only in iCloud (Optimize Mac Storage), edit and save: the row shows the download, ✕ stops it.
-7. Reset the photo's settings in LightCraft, then Photo ▸ Restore Edit from Apple Photos: the saved settings come
+7. Reset the photo's settings in LightCraft, then Photo ▸ Apple Photos ▸ Restore Edit from Apple Photos: the saved settings come
    back; Edit ▸ Undo takes them away again.
 8. Edit the same photo in Photos (any adjustment), then Restore Edit again: it is skipped, saying the edit in
    Photos was not saved by LightCraft.
-9. Open that photo in LightCraft's Edit tools (or Photo ▸ Sync with Apple Photos): it now shows Photos' edit, and
+9. Open that photo in LightCraft's Edit tools (or Photo ▸ Apple Photos ▸ Sync with Apple Photos): it now shows Photos' edit, and
    the toast says the edit was brought in. Its LightCraft settings started again from the default (they were saved
    in step 2); with changes made after the save, they are in the snapshot *LightCraft edit before the Photos
    edit*.
