@@ -186,6 +186,12 @@ LightCraft leaves its metadata alone. Not carried over yet: people, place names 
 
 ## Saving an edit back to Photos
 
+> **Tested on a Mac** (macOS 27.3, packaged app, System Photo Library): the [manual test](#manual-test-macos-packaged-app)
+> steps 1–3 (save), 7 (restore), 9 (an edit made in Photos is brought in) and 10 (both edits kept, and a revert in
+> Photos brings back the original), and the Photo ▸ Apple Photos submenu and right-click menu. Not yet confirmed:
+> step 8 (Restore skips an edit made in Photos), steps 4–6 (save again after a revert, deny the change, an
+> iCloud-only photo). Please run them again after changing `crates/photokit` or these engine modules.
+
 A photo copied out of Photos to be edited (issue #1622: the first edit of an item from the sidebar's Apple
 Photos section) can put its edit back on the asset it came from: **Photo ▸ Apple Photos ▸ Save Edit to Apple Photos**
 (⌘⌥⇧P / Ctrl+Alt+Shift+P, `applePhotos.saveEdit`). Photos then shows the edited photo in place of the asset's current version, in every
