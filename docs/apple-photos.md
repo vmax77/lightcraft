@@ -242,7 +242,15 @@ Bringing in Photos' version isn't an undo step (as copying a Photos item isn't).
 the version of the photo they build on (stored with them as `base`).
 
 Building on Photos' version means editing its rendered JPEG or HEIC, not the raw original: there is less room for
-large exposure or colour changes. Photos shown but not yet copied still show their original, not Photos' edit.
+large exposure or colour changes.
+
+Photos not copied yet show Photos' edit too, read from the library's files (so for any library, not only the System
+Photo Library): an asset Photos marks edited (`ZADJUSTMENTSSTATE` above 0 in `Photos.sqlite`; `ZHASADJUSTMENTS` in
+older libraries) shows its full-size edited version, `resources/renders/<first character of the UUID>/<UUID>_1_201_a.heic`
+(or `.jpeg`), with Photos' preview of it, `resources/derivatives/<first character>/<UUID>_1_105_c.jpeg`, in the grid
+(both observed in a Photos 11 library on macOS 27.3). Editing it copies that version, and LightCraft's settings build
+on it. When the edited version isn't on this Mac (Optimize Mac Storage), the original shows, as before. Videos show
+their original.
 
 ## Reading an edit back from Photos
 

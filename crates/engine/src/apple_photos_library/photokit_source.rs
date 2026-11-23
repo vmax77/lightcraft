@@ -142,6 +142,8 @@ pub(super) fn map_asset(asset: photokit::Asset, known: Option<&PhotosAsset>) -> 
         availability: known.map_or(Availability::Unknown, |k| k.availability),
         paired_original: known.map_or(Companion::Unknown, |k| k.paired_original.clone()),
         live_video: known.map_or(Companion::Unknown, |k| k.live_video.clone()),
+        edited: known.is_some_and(|k| k.edited),
+        edited_path: known.and_then(|k| k.edited_path.clone()),
     })
 }
 

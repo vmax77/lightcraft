@@ -440,7 +440,11 @@ impl MediaCache {
             // never takes the preview: it needs the original. The files are tried on the render
             // worker, in that order: the UI thread never looks at the disk.
             Source::ApplePhotos { library, uuid, original } => {
-                let preview = crate::photos_browse::preview_path(library, uuid);
+                // a proxy of an asset edited in Photos shows the version Photos shows, and Photos'
+                // preview of that version, before the original's
+                let edited = original.as_deref().is_some_and(crate::photos_browse::is_rendered_path);
+                let preview =
+                    if edited { crate::photos_browse::edited_preview_path(library, uuid) } else { crate::photos_browse::preview_path(library, uuid) };
                 let small = max_edge <= SourceLevel::Thumb.max_edge();
                 let mut files: Vec<String> = Vec::new();
                 if small {

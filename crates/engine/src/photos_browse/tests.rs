@@ -286,3 +286,89 @@ fn a_proxy_is_named_with_the_extension_of_the_file_photos_keeps() {
     let a = proxy_of(&s, ASSET_A);
     assert_eq!((a.file_name.as_str(), a.format.as_str()), ("IMG_0001.HEIC", "HEIC"), "a HEIC kept as HEIC keeps its name");
 }
+
+/// The fixture library with `column` (Photos' "edited" column of one version or another) set to
+/// `value` on D and E (edited in Photos), and D's full-size edited version written as Photos keeps
+/// it. E's isn't on this Mac.
+fn edited_library(column: &str, value: i64) -> Library {
+    let mut tables = fixture::photos_tables(Layout::Photos6);
+    let assets: &mut Table = tables.iter_mut().find(|t| t.name == "ZASSET").unwrap();
+    assets.columns.push(column.to_string());
+    for (_, values) in &mut assets.rows {
+        values.push(V::Null);
+    }
+    for (pk, uuid) in [(4, ASSET_D), (5, ASSET_E)] {
+        assets.row(&[
+            ("Z_PK", V::Int(pk)),
+            ("ZUUID", t(uuid)),
+            ("ZFILENAME", t(&format!("{uuid}.dng"))),
+            ("ZDIRECTORY", t("0")),
+            (column, V::Int(value)),
+        ]);
+    }
+    let library = Library::new(&tables);
+    let renders = library.root.join("resources").join("renders").join("0");
+    std::fs::create_dir_all(&renders).unwrap();
+    std::fs::write(renders.join(format!("{ASSET_D}_1_201_a.heic")), b"the version Photos shows").unwrap();
+    library
+}
+
+/// An asset edited in Photos shows the version Photos shows (whichever app edited last, that edit
+/// shows), with Photos' preview of it; one whose edited version isn't here shows its original.
+#[test]
+fn an_asset_edited_in_photos_shows_the_version_photos_shows() {
+    for (column, value) in [("ZADJUSTMENTSSTATE", 3), ("ZADJUSTMENTSSTATE", 2), ("ZHASADJUSTMENTS", 1)] {
+        let library = edited_library(column, value);
+        let mut s = Session::new();
+        show(&mut s, &library, json!({}));
+        let d = proxy_of(&s, ASSET_D);
+        let render = library.root.join("resources").join("renders").join("0").join(format!("{ASSET_D}_1_201_a.heic"));
+        assert!(
+            matches!(&d.source, Source::ApplePhotos { original: Some(o), .. } if *o == render.to_string_lossy()),
+            "{column}={value}: {:?}",
+            d.source
+        );
+        assert_eq!((d.format.as_str(), d.kind), ("HEIC", lightcraft_catalog::MediaKind::Image), "the edited version, not the raw");
+        assert!(crate::media::content_key(&d).ends_with(":edited"), "its thumbnails are its own");
+        let e = proxy_of(&s, ASSET_E);
+        let original = library.root.join("originals").join("0").join(format!("{ASSET_E}.dng"));
+        assert!(matches!(&e.source, Source::ApplePhotos { original: Some(o), .. } if *o == original.to_string_lossy()), "{:?}", e.source);
+    }
+    // not edited (0): the original
+    let library = edited_library("ZADJUSTMENTSSTATE", 0);
+    let mut s = Session::new();
+    show(&mut s, &library, json!({}));
+    assert!(matches!(&proxy_of(&s, ASSET_D).source, Source::ApplePhotos { original: Some(o), .. } if o.ends_with(".dng")));
+}
+
+#[test]
+fn edited_versions_are_told_from_originals() {
+    use crate::apple_photos_library::rendered_path;
+    assert!(is_rendered_path("/L.photoslibrary/resources/renders/8/80814379-9B16_1_201_a.heic"));
+    assert!(!is_rendered_path("/L.photoslibrary/originals/8/80814379-9B16.heic"));
+    assert!(!is_rendered_path("/L.photoslibrary/resources/derivatives/8/80814379-9B16_1_105_c.jpeg"));
+    assert!(!is_rendered_path("/elsewhere/renders/8/x_1_201_a.heic"), "only inside a library's resources");
+    assert_eq!(rendered_path(Path::new("/nowhere"), ASSET_D), None);
+    assert_eq!(rendered_path(Path::new("/nowhere"), "../x"), None);
+    assert_eq!(
+        edited_preview_path("/L.photoslibrary", "80814379-9B16").as_deref(),
+        Some("/L.photoslibrary/resources/derivatives/8/80814379-9B16_1_105_c.jpeg")
+    );
+}
+
+/// Editing it copies the version Photos shows, and the copy builds on that edit.
+#[test]
+fn editing_an_asset_edited_in_photos_copies_the_version_photos_shows() {
+    let library = edited_library("ZADJUSTMENTSSTATE", 3);
+    let lib = crate::tests::xmp::temp_dir("photos-browse-edited-copy");
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    show(&mut s, &library, json!({}));
+    let d = proxy_of(&s, ASSET_D).id;
+    let mut no_fetch = |_: &str, _: &mut dyn std::io::Write| -> std::result::Result<u64, String> { panic!("the edited version is on this Mac") };
+    let done = s.edit_photos_items(&[d], &mut no_fetch).unwrap();
+    assert_eq!(std::fs::read(&done[0].1).unwrap(), b"the version Photos shows");
+    assert!(done[0].1.to_string_lossy().ends_with(".heic"), "{:?}", done[0].1);
+    let link = s.catalog.photo(d).unwrap().from_photos.clone().unwrap();
+    assert_eq!(link.sync.and_then(|s| s.base_ms), Some(0), "LightCraft's settings build on Photos' edit");
+}

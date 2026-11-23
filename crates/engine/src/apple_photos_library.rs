@@ -125,7 +125,8 @@ pub struct GeoPoint {
     pub longitude: f64,
 }
 
-/// One photo or video in a Photos library. Photos' own edits are ignored: this is always the original.
+/// One photo or video in a Photos library: its original, and the version Photos shows when it was
+/// edited there ([`Self::edited_path`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhotosAsset {
     /// Photos' id for the asset, stable across launches.
@@ -161,6 +162,13 @@ pub struct PhotosAsset {
     pub paired_original: Companion,
     /// The video of a Live Photo.
     pub live_video: Companion,
+    /// Photos shows an edited version of it (`ZADJUSTMENTSSTATE` above 0 in Photos 11 libraries,
+    /// `ZHASADJUSTMENTS` in older ones).
+    pub edited: bool,
+    /// That edited version, full size, when it is on this Mac:
+    /// `resources/renders/<first character of the UUID>/<UUID>_1_201_a.<heic|jpeg|…>` (observed in
+    /// a Photos 11 library on macOS 27.3).
+    pub edited_path: Option<PathBuf>,
 }
 
 impl PhotosAsset {
@@ -329,6 +337,8 @@ const ASSET_COLUMNS: &[&str] = &[
     "ZHEIGHT",
     "ZLATITUDE",
     "ZLONGITUDE",
+    "ZADJUSTMENTSSTATE",
+    "ZHASADJUSTMENTS",
 ];
 /// `ZADDITIONALASSETATTRIBUTES` columns read for each page.
 const ATTRIBUTE_COLUMNS: &[&str] = &["ZORIGINALFILENAME", "ZORIGINALFILESIZE", "ZTITLE", "ZTIMEZONEOFFSET"];
@@ -434,7 +444,11 @@ impl SqliteSource {
             Some(1) => AssetKind::Video,
             Some(n) => AssetKind::Other(n),
         };
+        let edited = table.int(row, "ZADJUSTMENTSSTATE").is_some_and(|n| n > 0) || table.flag(row, "ZHASADJUSTMENTS");
+        let edited_path = if edited { rendered_path(self.library.root(), &uuid) } else { None };
         PhotosAsset {
+            edited,
+            edited_path,
             uuid,
             file_name,
             original_file_name: attr_text("ZORIGINALFILENAME"),
@@ -1027,6 +1041,21 @@ fn original_path(root: &Path, directory: &str, file: &str) -> Option<PathBuf> {
         matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none() && !part.contains(['/', '\\', '\0'])
     };
     (plain(directory) && plain(file)).then(|| root.join("originals").join(directory).join(file))
+}
+
+/// Extensions Photos' full-size edited version has been seen with, most likely first.
+const RENDER_EXTENSIONS: &[&str] = &["heic", "jpeg", "jpg", "png", "tiff"];
+
+/// The full-size edited version Photos keeps of asset `uuid`, if it is there (see
+/// [`PhotosAsset::edited_path`]). Looks at the disk: call it off the UI thread.
+pub fn rendered_path(root: &Path, uuid: &str) -> Option<PathBuf> {
+    let first = uuid.chars().next()?;
+    let plain = uuid.len() <= 64 && uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if !plain {
+        return None;
+    }
+    let dir = root.join("resources").join("renders").join(first.to_string());
+    RENDER_EXTENSIONS.iter().map(|ext| dir.join(format!("{uuid}_1_201_a.{ext}"))).find(|p| p.is_file())
 }
 
 /// A Core Data date (seconds since 2001-01-01 UTC) in the recorded time zone, if it is a real date.

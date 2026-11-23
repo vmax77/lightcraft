@@ -158,9 +158,13 @@ impl Session {
             // with the extension of the file that is copied, so a JPEG Photos keeps of a photo
             // imported as `.HEIC` isn't named `.HEIC` (a proxy made before its name said so)
             let shown = crate::photos_browse::proxy_file_name(Some(&p.file_name), original.is_some().then_some(fallback.as_str()), uuid);
+            // copied from the version Photos shows of an edit made there: LightCraft builds on it
+            // (its time unknown here: 0; see `PhotosSync::base_ms`)
+            let from_edit = original.as_deref().is_some_and(crate::photos_browse::is_rendered_path);
+            let sync = from_edit.then(|| lightcraft_catalog::PhotosSync { base_ms: Some(0), ..Default::default() });
             out.push(PhotosCopy {
                 id,
-                link: PhotosLink { library: library.clone(), uuid: uuid.clone(), ..Default::default() },
+                link: PhotosLink { library: library.clone(), uuid: uuid.clone(), sync },
                 original: original.as_deref().map(PathBuf::from),
                 size: p.file_size,
                 file_name: safe_name(&shown, &fallback),

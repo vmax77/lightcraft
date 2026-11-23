@@ -169,8 +169,12 @@ pub fn content_key(p: &Photo) -> String {
         (None, Source::Demo { scene }) => format!("demo:{scene}"),
         (None, Source::File { path }) => format!("file:{path}:{}", p.file_size),
         // whether the original is here: a render made from Photos' small preview while it was only
-        // in iCloud is not one of the original
-        (None, Source::ApplePhotos { library, uuid, original }) => format!("photos:{library}:{uuid}:{}", original.is_some()),
+        // in iCloud is not one of the original; and whether it is the version Photos shows of an
+        // edit made there
+        (None, Source::ApplePhotos { library, uuid, original }) => {
+            let edited = original.as_deref().is_some_and(crate::photos_browse::is_rendered_path);
+            format!("photos:{library}:{uuid}:{}{}", original.is_some(), if edited { ":edited" } else { "" })
+        }
     }
 }
 

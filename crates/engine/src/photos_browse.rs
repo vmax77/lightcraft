@@ -220,9 +220,16 @@ mod native {
 
     /// What a proxy shows of `a`.
     fn item(a: &PhotosAsset) -> PhotosItem {
-        let file_name = super::proxy_file_name(a.original_file_name.as_deref(), a.file_name.as_deref(), &a.uuid);
+        // edited in Photos: the version Photos shows, when it is on this Mac (whichever app edited
+        // last, that edit shows; editing it in LightCraft builds on it)
+        let edited = a.edited_path.as_ref().filter(|_| a.kind != AssetKind::Video).map(|p| p.to_string_lossy().into_owned());
+        let stored = match &edited {
+            Some(p) => Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()),
+            None => a.file_name.clone(),
+        };
+        let file_name = super::proxy_file_name(a.original_file_name.as_deref(), stored.as_deref(), &a.uuid);
         let format = Path::new(&file_name).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
-        let raw = a.uti.as_deref().is_some_and(|u| u.ends_with("raw-image"));
+        let raw = edited.is_none() && a.uti.as_deref().is_some_and(|u| u.ends_with("raw-image"));
         let kind = match a.kind {
             AssetKind::Video => MediaKind::Video,
             _ if raw => MediaKind::Raw,
@@ -230,8 +237,9 @@ mod native {
         };
         // tried unless Photos says it is only in iCloud (a library may not say either way: a file
         // that turns out to be missing falls back to Photos' preview when it is shown)
-        let original =
-            (a.availability != Availability::CloudOnly).then(|| a.original_path.as_ref().map(|p| p.to_string_lossy().into_owned())).flatten();
+        let original = edited.or_else(|| {
+            (a.availability != Availability::CloudOnly).then(|| a.original_path.as_ref().map(|p| p.to_string_lossy().into_owned())).flatten()
+        });
         PhotosItem {
             uuid: a.uuid.clone(),
             file_name,
@@ -249,6 +257,33 @@ mod native {
             favourite: a.favourite,
         }
     }
+}
+
+/// Whether `path` is a full-size edited version Photos keeps ([`crate::apple_photos_library::rendered_path`]), not an original.
+pub fn is_rendered_path(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    let mut parents = p.ancestors().skip(1);
+    let _letter = parents.next();
+    parents.next().and_then(std::path::Path::file_name).is_some_and(|n| n == "renders")
+        && parents.next().and_then(std::path::Path::file_name).is_some_and(|n| n == "resources")
+        && p.file_name().is_some_and(|n| n.to_string_lossy().contains("_1_201_a."))
+}
+
+/// Photos' own small preview of the edited version it shows of an asset:
+/// `resources/derivatives/<first character of the UUID>/<UUID>_1_105_c.jpeg` (observed in a Photos
+/// 11 library on macOS 27.3; a library may lack it). `None` for a UUID that can't name a file.
+pub fn edited_preview_path(library: &str, uuid: &str) -> Option<String> {
+    let first = uuid.chars().next()?;
+    let plain = uuid.len() <= 64 && uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    plain.then(|| {
+        std::path::Path::new(library)
+            .join("resources")
+            .join("derivatives")
+            .join(first.to_string())
+            .join(format!("{uuid}_1_105_c.jpeg"))
+            .to_string_lossy()
+            .into_owned()
+    })
 }
 
 /// Photos' own small preview of an asset's unedited original, about 480 pixels long:
