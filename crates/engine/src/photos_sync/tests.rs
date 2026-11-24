@@ -200,3 +200,30 @@ fn a_save_never_replaces_an_edit_made_in_photos_that_lightcraft_hasnt_brought_in
     let sync = sync_of(&s, d).unwrap();
     assert!(sync.saved && sync.base_ms == Some(10_000));
 }
+
+/// A copy of an asset edited in Photos, saved before any sync noted when Photos last changed it:
+/// the edit Photos shows is the version it was copied from, no new edit, and the save goes ahead.
+/// A version that differs is a new edit, and the save is refused.
+#[test]
+fn a_save_of_a_copy_of_photos_version_needs_no_sync_first() {
+    let (mut s, d, _library) = edited_copy("photos-sync-save-own");
+    // as copied from Photos' edited version: building on an edit of Photos, never synced
+    let link = s.catalog.photo(d).unwrap().from_photos.clone().unwrap();
+    let link = lightcraft_catalog::PhotosLink { sync: Some(PhotosSync { base_ms: Some(0), ..Default::default() }), ..link };
+    s.apply_system(lightcraft_catalog::Op::SetFromPhotos { id: d, link: Some(link) }).unwrap();
+    let own = std::fs::read(file_of(&s, d)).unwrap();
+    let mut photos = FakePhotos { modified: Some(10.0), edited: true, current: own, ..Default::default() };
+    let mut saved = 0;
+    let mut save = |_: &str, _: &Path, _: &[u8]| -> Result<(), String> {
+        saved += 1;
+        Ok(())
+    };
+    s.save_photos_edits(&[d], &mut save, &mut photos).unwrap();
+    assert_eq!(saved, 1, "saved without a sync first");
+    assert_eq!(sync_of(&s, d).unwrap().photos_modified_ms, 10_000, "Photos' time noted");
+    // edited in Photos since (and not LightCraft's): refused
+    (photos.modified, photos.current) = (Some(20.0), jpeg(9, 9, 10));
+    let mut never = |_: &str, _: &Path, _: &[u8]| -> Result<(), String> { panic!("nothing is saved") };
+    let e = s.save_photos_edits(&[d], &mut never, &mut photos).unwrap_err().to_string();
+    assert!(e.contains(crate::photos_save::NEWER_IN_PHOTOS), "{e}");
+}

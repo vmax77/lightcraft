@@ -43,6 +43,8 @@ pub struct PhotosSave {
     /// What LightCraft last knew of the asset in Photos, to refuse replacing an edit made there
     /// since that LightCraft hasn't brought in ([`crate::photos_sync`]).
     pub sync: Option<lightcraft_catalog::PhotosSync>,
+    /// The photo's file (the copy made of the asset), to tell Photos' version of it from a new edit.
+    pub file: Option<std::path::PathBuf>,
     export: PreparedExport,
 }
 
@@ -97,7 +99,15 @@ impl PhotosSave {
     pub fn run(self, save: &mut Save, photos: &mut dyn crate::photos_sync::PhotosAccess) -> std::result::Result<Option<f64>, String> {
         let label = self.file_name.clone();
         let (pending, _) = crate::photos_sync::pending_change(self.sync.as_ref(), &self.uuid, photos).map_err(|e| format!("{label}: {e}"))?;
-        if pending.is_some() {
+        // an edit of Photos LightCraft hasn't seen: the version this photo was copied from (a copy
+        // of an asset edited in Photos, saved before any sync noted when Photos last changed it)
+        // is no new edit, and saving goes ahead
+        let new_edit = match pending {
+            None => false,
+            Some(crate::photos_sync::Change::Edited) => !self.is_photos_version(photos),
+            Some(crate::photos_sync::Change::Reverted) => true,
+        };
+        if new_edit {
             return Err(format!("{label}: {NEWER_IN_PHOTOS}"));
         }
         let exported = self.export.run().map_err(|e| format!("{label}: {e}"))?;
@@ -114,6 +124,15 @@ impl PhotosSave {
         r.map_err(|e| format!("{label}: {e}"))?;
         // when it changed now, so this save isn't taken for an edit made in Photos
         Ok(photos.state(&self.uuid).ok().and_then(|s| s.modified))
+    }
+}
+
+impl PhotosSave {
+    /// Whether the version Photos shows is, byte for byte, this photo's file.
+    fn is_photos_version(&self, photos: &mut dyn crate::photos_sync::PhotosAccess) -> bool {
+        let Some(file) = &self.file else { return false };
+        let mut current = Vec::new();
+        photos.download_current(&self.uuid, &mut current).is_ok() && std::fs::read(file).is_ok_and(|own| own == current)
     }
 }
 
@@ -173,8 +192,12 @@ impl Session {
             }
             let adjustment = adjustment_data(&p.develop, link.sync.as_ref().and_then(|s| s.base_ms));
             let file_name = p.file_name.clone();
+            let file = match &p.source {
+                lightcraft_catalog::Source::File { path } => Some(std::path::PathBuf::from(path)),
+                _ => None,
+            };
             let export = crate::export::prepare_export(self, id, &options, 1).map_err(|e| EngineError::Other(format!("{file_name}: {e}")))?;
-            saves.push(PhotosSave { id, uuid: link.uuid, file_name, adjustment, sync: link.sync, export });
+            saves.push(PhotosSave { id, uuid: link.uuid, file_name, adjustment, sync: link.sync, file, export });
         }
         Ok((saves, skipped))
     }
