@@ -121,6 +121,30 @@ fn sync(s: &mut Session, p: &Value) -> crate::Result<Value> {
     Ok(json!({"photos": done.iter().map(row).collect::<Vec<_>>()}))
 }
 
+/// Save every LightCraft edit not saved to Photos yet, library-wide, as one change (see
+/// [`crate::photos_save::run_many`]).
+fn save_all_edits(s: &mut Session, _: &Value) -> crate::Result<Value> {
+    const C: &str = "applePhotos.saveAllEdits";
+    #[cfg(not(target_arch = "wasm32"))]
+    let (cancel, mut progress, mut checked) = (std::sync::atomic::AtomicBool::new(false), |_: f64| {}, |_: f64| {});
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut photos = crate::photos_sync::PhotoKitAccess { cancel: &cancel, progress: &mut checked };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut save = crate::photos_save::photokit_save_many(&cancel, &mut progress);
+    #[cfg(target_arch = "wasm32")]
+    let mut photos = crate::photos_sync::NoPhotos;
+    #[cfg(target_arch = "wasm32")]
+    let mut save = |items: &[(String, std::path::PathBuf, Vec<u8>)]| -> Vec<Result<(), String>> {
+        items.iter().map(|_| Err("Apple Photos is only available on macOS".to_string())).collect()
+    };
+    let (done, skipped) = s.save_all_photos_edits(&mut save, &mut photos).map_err(|e| bad(C, e.to_string()))?;
+    Ok(json!({
+        "saved": done.iter().filter(|d| d.2.is_ok()).map(|d| d.0.0).collect::<Vec<_>>(),
+        "failed": done.iter().filter_map(|d| d.2.as_ref().err().map(|e| json!({"id": d.0.0, "why": e}))).collect::<Vec<_>>(),
+        "skipped": skipped.iter().map(|k| json!({"id": k.id.0, "why": k.why})).collect::<Vec<_>>(),
+    }))
+}
+
 fn albums(s: &mut Session, _: &Value) -> crate::Result<Value> {
     let browse = s.photos_browse.as_ref();
     Ok(json!({
@@ -167,6 +191,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{ids?: photo ids (default: the selection)} — for each edited photo that was copied from Apple Photos to be edited, render it (full-size JPEG, Display P3) and put it on the asset it came from, in place of what Photos showed; Photos keeps the original (Revert to Original) and LightCraft's settings go with the edit. System Photo Library only, macOS app only; macOS asks to allow each change. Others are skipped → {saved: [id], skipped: [{id, why}]}",
             always,
             save_edit
+        ),
+        cmd!(
+            "applePhotos.saveAllEdits",
+            "Save All Edits to Apple Photos",
+            ["Photo", "Apple Photos"],
+            None,
+            "{} — library-wide: every photo from Apple Photos with LightCraft edits not saved there yet (edited, and its settings not the ones last saved), rendered and put on its asset as Save Edit to Apple Photos does, all as one change, so macOS asks once. In the app, items not copied yet are copied first; here they are skipped. System Photo Library only, macOS app only → {saved: [id], failed: [{id, why}], skipped: [{id, why}]}",
+            always,
+            save_all_edits
         ),
         cmd!(
             "applePhotos.restoreEdit",

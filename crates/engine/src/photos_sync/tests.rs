@@ -227,3 +227,39 @@ fn a_save_of_a_copy_of_photos_version_needs_no_sync_first() {
     let e = s.save_photos_edits(&[d], &mut never, &mut photos).unwrap_err().to_string();
     assert!(e.contains(crate::photos_save::NEWER_IN_PHOTOS), "{e}");
 }
+
+/// Save All: every photo whose LightCraft edit isn't in Photos yet, all handed to Photos at once
+/// (macOS asks once); then nothing is left to save.
+#[test]
+fn save_all_hands_every_unsaved_edit_to_photos_at_once() {
+    let (mut s, d, _library) = edited_copy("photos-sync-save-all");
+    assert_eq!(s.unsaved_photos_edits(), [d], "edited, never saved");
+    let mut photos = FakePhotos { modified: Some(5.0), ..Default::default() };
+    let mut calls = Vec::new();
+    let mut save = |items: &[(String, std::path::PathBuf, Vec<u8>)]| -> Vec<Result<(), String>> {
+        calls.push(items.iter().map(|(uuid, path, _)| (uuid.clone(), path.exists())).collect::<Vec<_>>());
+        items.iter().map(|_| Ok(())).collect()
+    };
+    let (done, skipped) = s.save_all_photos_edits(&mut save, &mut photos).unwrap();
+    assert_eq!(calls, [vec![(crate::photos_edit::tests::ASSET_D.to_string(), true)]], "one change, its JPEG written");
+    assert!(skipped.is_empty());
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].2, Ok(Some(5.0)));
+    assert!(s.unsaved_photos_edits().is_empty(), "saved: nothing left");
+    // changed again in LightCraft: unsaved again
+    s.execute("develop.set", &json!({"control": "light.exposure", "value": 0.2})).unwrap();
+    assert_eq!(s.unsaved_photos_edits(), [d]);
+}
+
+/// A photo that can't be rendered fails alone; the others go to Photos together.
+#[test]
+fn one_save_that_cant_be_rendered_fails_alone() {
+    use crate::photos_save::run_many;
+    let (mut s, d, _library) = edited_copy("photos-sync-save-many");
+    // Photos shows an edit LightCraft hasn't brought in: this one is refused before rendering
+    let mut photos = FakePhotos { modified: Some(9.0), edited: true, current: jpeg(5, 5, 1), ..Default::default() };
+    let (saves, _) = s.photos_saves(&[d]).unwrap();
+    let mut never = |_: &[(String, std::path::PathBuf, Vec<u8>)]| -> Vec<Result<(), String>> { panic!("nothing to hand over") };
+    let done = run_many(saves, &mut never, &mut photos, &mut |_| {});
+    assert!(done[0].2.as_ref().unwrap_err().contains(crate::photos_save::NEWER_IN_PHOTOS));
+}
