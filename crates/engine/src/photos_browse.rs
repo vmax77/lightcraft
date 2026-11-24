@@ -377,10 +377,17 @@ impl Session {
                 }
             }
         }
+        // a proxy whose file changed (the original downloaded or offloaded, an edit made or reverted
+        // in Photos) drops what was decoded of the old file: a view opened before this read
+        // (a restored loupe at launch) would go on showing it
+        let relinked: Vec<PhotoId> = ops.iter().filter_map(|op| if let Op::Relink { id, .. } = op { Some(*id) } else { None }).collect();
         for chunk in ops.chunks(OPS_PER_BATCH) {
             let op = Op::Batch { ops: chunk.to_vec() };
             self.catalog.apply(op.clone())?;
             self.pending_log.push(op);
+        }
+        for id in relinked {
+            self.media.forget(id);
         }
         let generation = self.photos_browse.as_ref().map_or(0, |b| b.generation.wrapping_add(1));
         self.photos_browse = Some(PhotosBrowse { library: read.library.clone(), view: read.view.clone(), albums: read.albums, members, generation });

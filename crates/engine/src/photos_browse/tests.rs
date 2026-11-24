@@ -202,6 +202,40 @@ fn a_proxy_mirrors_what_photos_says() {
     assert_eq!((r["updated"].as_u64(), proxy_of(&s, ASSET_B).rating), (Some(0), 2), "nothing changed in Photos");
 }
 
+/// A proxy whose file changed (here: edited in Photos, so it now shows the version Photos shows)
+/// drops what was decoded of the old file: a loupe opened before the read (restored at launch)
+/// showed the original after the grid had moved on to the edit.
+#[test]
+fn a_proxy_whose_file_changed_drops_what_was_decoded_of_the_old_one() {
+    use crate::media::SourceLevel;
+    let mut s = Session::new();
+    let item = |original: &str| PhotosItem {
+        uuid: ASSET_B.into(),
+        file_name: "B.HEIC".into(),
+        format: "HEIC".into(),
+        width: 3,
+        height: 2,
+        original: Some(original.into()),
+        ..Default::default()
+    };
+    let read = |items| PhotosRead { library: "/L.photoslibrary".into(), view: PhotosView::All, items, albums: Vec::new(), warnings: Vec::new() };
+    s.show_photos(read(vec![item("/L.photoslibrary/originals/B/B.heic")])).unwrap();
+    let id = proxy_of(&s, ASSET_B).id;
+    let image = std::sync::Arc::new(lightcraft_raster::Rgb32f::new(1, 1));
+    let levels = [SourceLevel::Thumb, SourceLevel::Preview, SourceLevel::Full];
+    for level in levels {
+        s.media.insert(id, level, image.clone());
+    }
+    // read again, nothing changed: what was decoded stays
+    s.show_photos(read(vec![item("/L.photoslibrary/originals/B/B.heic")])).unwrap();
+    assert!(levels.iter().all(|l| s.media.has_source(id, *l)));
+    // edited in Photos since: the original's pictures go
+    s.show_photos(read(vec![item("/L.photoslibrary/resources/renders/B/B_1_201_a.heic")])).unwrap();
+    for level in levels {
+        assert!(!s.media.has_source(id, level), "{level:?}");
+    }
+}
+
 #[test]
 fn bad_requests_are_errors() {
     let library = library();
