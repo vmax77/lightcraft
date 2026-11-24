@@ -244,7 +244,37 @@ pub fn save_edit(
     if !std::fs::metadata(rendered).is_ok_and(|m| m.is_file() && m.len() > 0) {
         return Err(EditError::NoRender);
     }
-    imp::save_edit(local_id, rendered, adjustment, cancel, progress)
+    let item = EditItem { local_id, rendered, adjustment: *adjustment };
+    save_edits(&[item], cancel, progress).into_iter().next().unwrap_or(Err(EditError::NotFound))
+}
+
+/// One edit for [`save_edits`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditItem<'a> {
+    pub local_id: &'a str,
+    pub rendered: &'a std::path::Path,
+    pub adjustment: Adjustment<'a>,
+}
+
+/// [`save_edit`] for several assets as one change: each is prepared (downloaded from iCloud
+/// first when needed), then all are committed together, so macOS asks the user once, not once a
+/// photo. One result per item, in order: an item that couldn't be prepared fails alone; the
+/// change itself (allowed, declined or refused) is the same for all the others. `progress` is
+/// told the fraction of the items prepared.
+pub fn save_edits(items: &[EditItem], cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(f64)) -> Vec<Result<(), EditError>> {
+    let checked: Vec<Result<(), EditError>> = items
+        .iter()
+        .map(|i| {
+            if i.adjustment.data.len() > MAX_ADJUSTMENT_BYTES {
+                Err(EditError::TooLarge)
+            } else if !std::fs::metadata(i.rendered).is_ok_and(|m| m.is_file() && m.len() > 0) {
+                Err(EditError::NoRender)
+            } else {
+                Ok(())
+            }
+        })
+        .collect();
+    imp::save_edits(items, checked, cancel, progress)
 }
 
 /// What an app stored with the edit Photos shows for an asset ([`read_adjustment`]).
@@ -396,14 +426,13 @@ mod imp {
         Err(PhotoKitError::NotMacOs.into())
     }
 
-    pub fn save_edit(
-        _: &str,
-        _: &std::path::Path,
-        _: &super::Adjustment,
+    pub fn save_edits(
+        _: &[super::EditItem],
+        checked: Vec<Result<(), super::EditError>>,
         _: &std::sync::atomic::AtomicBool,
         _: &mut dyn FnMut(f64),
-    ) -> Result<(), super::EditError> {
-        Err(PhotoKitError::NotMacOs.into())
+    ) -> Vec<Result<(), super::EditError>> {
+        checked.into_iter().map(|c| c.and(Err(PhotoKitError::NotMacOs.into()))).collect()
     }
 
     pub fn edit_state(_: &str) -> Result<super::EditState, super::EditError> {
@@ -501,6 +530,16 @@ mod tests {
         assert_eq!(save_edit("A/L0/001", &jpeg, &small, &cancel, &mut progress), Err(EditError::PhotoKit(expected)));
         assert_eq!(read_adjustment("A/L0/001", "x", &cancel, &mut progress), Err(EditError::PhotoKit(expected)));
         assert_eq!(edit_state("A/L0/001"), Err(EditError::PhotoKit(expected)));
+        // several at once: each item's own problem, the rest PhotoKit's
+        let items = [
+            EditItem { local_id: "A/L0/001", rendered: &jpeg, adjustment: too_big },
+            EditItem { local_id: "B/L0/001", rendered: &empty, adjustment: small },
+            EditItem { local_id: "C/L0/001", rendered: &jpeg, adjustment: small },
+        ];
+        assert_eq!(
+            save_edits(&items, &cancel, &mut progress),
+            [Err(EditError::TooLarge), Err(EditError::NoRender), Err(EditError::PhotoKit(expected))]
+        );
         let mut out = Vec::new();
         assert_eq!(download_current("A/L0/001", &mut out, &cancel, &mut progress), Err(DownloadError::PhotoKit(expected)));
         let _ = std::fs::remove_dir_all(&dir);

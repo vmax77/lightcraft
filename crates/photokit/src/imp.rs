@@ -611,58 +611,101 @@ pub fn read_adjustment(
     })
 }
 
-pub fn save_edit(
-    local_id: &str,
-    rendered: &std::path::Path,
-    adjustment: &super::Adjustment,
+/// Prepare the edit of `item` for a change: the asset's editing output, holding the rendered
+/// photo and the adjustment data.
+fn prepare_edit(
+    item: &super::EditItem,
     cancel: &std::sync::atomic::AtomicBool,
     progress: &mut dyn FnMut(f64),
-) -> Result<(), super::EditError> {
+) -> Result<(Retained<PHAsset>, Retained<objc2_photos::PHContentEditingOutput>), super::EditError> {
     use super::EditError;
     use objc2::AllocAnyThread;
-    use objc2_photos::{PHAdjustmentData, PHAssetChangeRequest, PHContentEditingOutput};
-    use std::sync::atomic::Ordering;
+    use objc2_photos::{PHAdjustmentData, PHContentEditingOutput};
 
-    let asset = image_asset(local_id, true)?;
+    let asset = image_asset(item.local_id, true)?;
     let output = with_input(&asset, None, cancel, progress, |input| {
         // SAFETY: an initializer taking the valid input PhotoKit passed; the output is retained.
         SendOutput(unsafe { PHContentEditingOutput::initWithContentEditingInput(PHContentEditingOutput::alloc(), input) })
     })?
     .0;
-
     // SAFETY: a getter without arguments returning a non-null file URL inside Photos' editing area.
     let url = unsafe { output.renderedContentURL() };
     let target =
         url.path().map(|p| std::path::PathBuf::from(p.to_string())).ok_or_else(|| EditError::Write("Photos gave no file to write to".into()))?;
-    std::fs::copy(rendered, &target).map_err(|e| EditError::Write(e.to_string()))?;
+    std::fs::copy(item.rendered, &target).map_err(|e| EditError::Write(e.to_string()))?;
     // SAFETY: an initializer taking two NSStrings and NSData (copied by the object); the setter takes
     // the adjustment data the output keeps.
     unsafe {
-        let data = objc2_foundation::NSData::with_bytes(adjustment.data);
+        let data = objc2_foundation::NSData::with_bytes(item.adjustment.data);
         let adjustment = PHAdjustmentData::initWithFormatIdentifier_formatVersion_data(
             PHAdjustmentData::alloc(),
-            &NSString::from_str(adjustment.format),
-            &NSString::from_str(adjustment.version),
+            &NSString::from_str(item.adjustment.format),
+            &NSString::from_str(item.adjustment.version),
             &data,
         );
         output.setAdjustmentData(Some(&adjustment));
     }
-    if cancel.load(Ordering::Relaxed) {
-        return Err(EditError::Cancelled);
-    }
-    let change = RcBlock::new(move || {
-        // SAFETY: runs inside `performChangesAndWait:`, the only place a change request may be made;
-        // the asset and output are retained by the block.
-        unsafe { PHAssetChangeRequest::changeRequestForAsset(&asset).setContentEditingOutput(Some(&output)) };
-    });
-    // SAFETY: the change block has the declared type (`void (^)(void)`) and is copied by PhotoKit;
-    // this waits on a worker thread (checked above), as the method requires.
-    let done = unsafe { PHPhotoLibrary::sharedPhotoLibrary().performChangesAndWait_error(RcBlock::as_ptr(&change)) };
-    done.map_err(|e| {
-        if e.code() == objc2_photos::PHPhotosError::UserCancelled.0 {
-            EditError::Declined
-        } else {
-            EditError::Failed(e.localizedDescription().to_string())
+    Ok((asset, output))
+}
+
+pub fn save_edits(
+    items: &[super::EditItem],
+    checked: Vec<Result<(), super::EditError>>,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Vec<Result<(), super::EditError>> {
+    use super::EditError;
+    use objc2_photos::PHAssetChangeRequest;
+    use std::sync::atomic::Ordering;
+
+    let n = items.len().max(1) as f64;
+    let mut results = checked;
+    let mut prepared = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        if results.get(i).is_some_and(Result::is_err) {
+            continue;
         }
-    })
+        let mut one = |f: f64| progress((i as f64 + f.clamp(0.0, 1.0)) / n);
+        match prepare_edit(item, cancel, &mut one) {
+            Ok(p) => prepared.push((i, p)),
+            Err(e) => {
+                if let Some(r) = results.get_mut(i) {
+                    *r = Err(e);
+                }
+            }
+        }
+        progress((i as f64 + 1.0) / n);
+    }
+    if prepared.is_empty() {
+        return results;
+    }
+    let outcome = if cancel.load(Ordering::Relaxed) {
+        Err(EditError::Cancelled)
+    } else {
+        let edits: Vec<_> = prepared.iter().map(|(_, p)| p.clone()).collect();
+        let change = RcBlock::new(move || {
+            for (asset, output) in &edits {
+                // SAFETY: runs inside `performChangesAndWait:`, the only place a change request may
+                // be made; the assets and outputs are retained by the block.
+                unsafe { PHAssetChangeRequest::changeRequestForAsset(asset).setContentEditingOutput(Some(output)) };
+            }
+        });
+        // SAFETY: the change block has the declared type (`void (^)(void)`) and is copied by
+        // PhotoKit; this waits on a worker thread (checked when the assets were prepared), as the
+        // method requires.
+        let done = unsafe { PHPhotoLibrary::sharedPhotoLibrary().performChangesAndWait_error(RcBlock::as_ptr(&change)) };
+        done.map_err(|e| {
+            if e.code() == objc2_photos::PHPhotosError::UserCancelled.0 {
+                EditError::Declined
+            } else {
+                EditError::Failed(e.localizedDescription().to_string())
+            }
+        })
+    };
+    for (i, _) in prepared {
+        if let Some(r) = results.get_mut(i) {
+            *r = outcome.clone();
+        }
+    }
+    results
 }
