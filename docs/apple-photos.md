@@ -202,7 +202,8 @@ LightCraft leaves its metadata alone. Not carried over yet: people, place names 
 > and reverts made in Photos while it is open, and an edit made in LightCraft on such a photo goes back to Photos
 > with Save Edit to Apple Photos alone (no Edit Apple Photos Item or Sync first). Every step of the manual test
 > below passed, also 4 (save again after a revert), 5 (deny the change), 6 (an iCloud-only photo) and 8 (Restore
-> skips an edit made in Photos). Please run them again after changing `crates/photokit` or these engine modules.
+> skips an edit made in Photos), and Save All Edits to Apple Photos (several photos, one macOS prompt) and the bottom
+> bar's Sync and Save buttons. Please run them again after changing `crates/photokit` or these engine modules.
 >
 > In Photos, an edit LightCraft saved is undone with **Image ▸ Revert to Original**; Photos offers no Reset
 > Adjustments for it, as for any other app's edit, since only LightCraft reads the settings stored with it.
