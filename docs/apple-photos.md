@@ -189,7 +189,10 @@ LightCraft leaves its metadata alone. Not carried over yet: people, place names 
 
 > **Tested on a Mac** (macOS 27.3, packaged app, System Photo Library): the [manual test](#manual-test-macos-packaged-app)
 > steps 1–3 (save), 7 (restore), 9 (an edit made in Photos is brought in) and 10 (both edits kept, and a revert in
-> Photos brings back the original), and the Photo ▸ Apple Photos submenu and right-click menu. Not yet confirmed:
+> Photos brings back the original), and the Photo ▸ Apple Photos submenu and right-click menu. Also: photos edited in
+> Photos show Photos' edit in LightCraft (grid, navigator and loupe) before they are copied, LightCraft follows edits
+> and reverts made in Photos while it is open, and an edit made in LightCraft on such a photo goes back to Photos
+> with Save Edit to Apple Photos alone (no Edit Apple Photos Item or Sync first). Not yet confirmed:
 > step 8 (Restore skips an edit made in Photos), steps 4–6 (save again after a revert, deny the change, an
 > iCloud-only photo). Please run them again after changing `crates/photokit` or these engine modules.
 
