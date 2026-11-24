@@ -1344,7 +1344,8 @@ fn context_menu_apple_photos(app: &mut LightcraftApp, ui: &mut egui::Ui, id: Pho
     let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
     let items = [
         ("applePhotos.edit", "Edit Apple Photos Item", proxy, "button:contextApplePhotosEdit"),
-        ("applePhotos.saveEdit", "Save Edit to Apple Photos", copy && edited, "button:contextApplePhotosSave"),
+        // an edited item not copied yet is copied first, then saved
+        ("applePhotos.saveEdit", "Save Edit to Apple Photos", edited, "button:contextApplePhotosSave"),
         ("applePhotos.restoreEdit", "Restore Edit from Apple Photos", true, "button:contextApplePhotosRestore"),
         ("applePhotos.sync", "Sync with Apple Photos", copy, "button:contextApplePhotosSync"),
     ];

@@ -46,6 +46,16 @@ impl PhotosEdit {
         self.running.is_some() || !self.queue.is_empty()
     }
 
+    /// `id`'s copy is being made or waits.
+    pub fn copying(&self, id: PhotoId) -> bool {
+        self.has(id)
+    }
+
+    /// `id`'s copy failed or was stopped.
+    pub fn failed(&self, id: PhotoId) -> bool {
+        self.failed.contains(&id)
+    }
+
     fn has(&self, id: PhotoId) -> bool {
         self.running.as_ref().is_some_and(|r| r.copy.id == id) || self.queue.iter().any(|c| c.id == id)
     }

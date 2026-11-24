@@ -174,7 +174,8 @@ Report the toast or JSON, and the macOS and Photos versions.
 **Photo ▸ Apple Photos** holds them all: Edit Apple Photos Item, Save Edit to Apple Photos (⌘⌥⇧P), Restore Edit
 from Apple Photos and Sync with Apple Photos. The same submenu is in the right-click menu of a photo from Photos, in
 the grid and in the filmstrip under the Edit tools, each item enabled where it applies to that photo (Edit for a
-photo not copied yet, Save for an edited copy, Sync for a copy); other photos don't show it.
+photo not copied yet, Save for an edited photo, Sync for a copy); other photos don't show it. Save never has to
+wait to be offered: an edited photo whose copy isn't made yet is copied first (under its activity row), then saved.
 
 ## What comes over from Photos
 

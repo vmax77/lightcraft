@@ -397,3 +397,47 @@ fn apple_photos_commands_are_a_submenu_and_in_the_filmstrips_right_click_menu() 
     assert!(has(&h, "button:contextApplePhotos"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Save on an edited Photos item whose copy isn't made yet copies it first, then saves it: the
+/// command never has to wait to be offered (here, off macOS or without Photos access, the save
+/// itself then says why it couldn't).
+#[test]
+fn saving_an_item_not_copied_yet_copies_it_first() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-photos-save-first-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let original = dir.join("Test.photoslibrary").join("originals").join("0").join("U1.jpg");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    let pixels = lightcraft_raster::Rgba8::from_bytes(4, 3, &[128u8; 4 * 3 * 4]).unwrap();
+    std::fs::write(&original, lightcraft_engine::export::encode_image(&pixels, &lightcraft_engine::export::ExportOptions::default()).unwrap())
+        .unwrap();
+    let mut session = lightcraft_engine::Session::new().with_fs();
+    session.open_library(dir.join("lib"), false).unwrap();
+    let services = Services { png: None, local_places: Some(Vec::new()), ..Default::default() };
+    let mut h = Headless::new(LightcraftApp::new(session, services), [1200.0, 1000.0], 1.0);
+    let item = PhotosItem {
+        uuid: "U1".into(),
+        file_name: "U1.JPG".into(),
+        format: "JPG".into(),
+        width: 4,
+        height: 3,
+        original: Some(original.to_string_lossy().into()),
+        ..Default::default()
+    };
+    let library = dir.join("Test.photoslibrary").to_string_lossy().into_owned();
+    h.app.session.show_photos(PhotosRead { library, view: PhotosView::All, items: vec![item], albums: Vec::new(), warnings: Vec::new() }).unwrap();
+    let u1 = h.app.session.catalog.photos().next().unwrap().id;
+    h.app.session.execute("library.select", &json!({"ids": [u1.0]})).unwrap();
+    h.app.session.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
+    assert!(h.app.session.catalog.photo(u1).unwrap().from_photos.is_none(), "not copied yet");
+
+    let r = h.app.run("applePhotos.saveEdit", json!({"ids": [u1.0]})).unwrap();
+    assert_eq!(r["afterCopy"], json!([u1.0]), "{r}");
+    assert!(h.app.photos_edit.busy(), "its copy is made first");
+    h.settle(SETTLE);
+    assert!(h.app.session.catalog.photo(u1).unwrap().from_photos.is_some(), "copied");
+    assert!(!h.app.photos_save.busy());
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
+    assert!(toast.contains(why), "then saved: {toast}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
