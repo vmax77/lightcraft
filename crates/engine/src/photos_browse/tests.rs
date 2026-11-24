@@ -384,10 +384,6 @@ fn edited_versions_are_told_from_originals() {
     assert!(!is_rendered_path("/elsewhere/renders/8/x_1_201_a.heic"), "only inside a library's resources");
     assert_eq!(rendered_path(Path::new("/nowhere"), ASSET_D), None);
     assert_eq!(rendered_path(Path::new("/nowhere"), "../x"), None);
-    assert_eq!(
-        edited_preview_path("/L.photoslibrary", "80814379-9B16").as_deref(),
-        Some("/L.photoslibrary/resources/derivatives/8/80814379-9B16_1_105_c.jpeg")
-    );
 }
 
 /// Editing it copies the version Photos shows, and the copy builds on that edit.

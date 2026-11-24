@@ -269,23 +269,6 @@ pub fn is_rendered_path(path: &str) -> bool {
         && p.file_name().is_some_and(|n| n.to_string_lossy().contains("_1_201_a."))
 }
 
-/// Photos' own small preview of the edited version it shows of an asset:
-/// `resources/derivatives/<first character of the UUID>/<UUID>_1_105_c.jpeg` (observed in a Photos
-/// 11 library on macOS 27.3; a library may lack it). `None` for a UUID that can't name a file.
-pub fn edited_preview_path(library: &str, uuid: &str) -> Option<String> {
-    let first = uuid.chars().next()?;
-    let plain = uuid.len() <= 64 && uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
-    plain.then(|| {
-        std::path::Path::new(library)
-            .join("resources")
-            .join("derivatives")
-            .join(first.to_string())
-            .join(format!("{uuid}_1_105_c.jpeg"))
-            .to_string_lossy()
-            .into_owned()
-    })
-}
-
 /// Photos' own small preview of an asset's unedited original, about 480 pixels long:
 /// `resources/derivatives/masters/<first character of the UUID>/<UUID>_4_5005_c.jpeg` (observed in
 /// Photos 11 libraries; a library may lack it). `None` for a UUID that can't name a file.
