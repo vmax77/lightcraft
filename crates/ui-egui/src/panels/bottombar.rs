@@ -90,7 +90,13 @@ fn centre(app: &mut LightcraftApp, ui: &mut egui::Ui, full: Rect, from: f32, to:
     let has_clip = app.session.clipboard.is_some();
     let label = crate::i18n::tr(if has_clip { "Paste Edit Settings" } else { "Copy Edit Settings" });
     let copy_width = (ui.painter().layout_no_wrap(label.to_string(), t.font(13.0), t.text_label).size().x + 24.0).max(136.0);
-    let centre_width = PILL_W + 10.0 + copy_width + 4.0 + 30.0;
+    // a photo from Apple Photos: Sync and Save buttons after the gear
+    let from_photos = app.session.active().and_then(|id| app.session.catalog.photo(id)).and_then(|p| {
+        let proxy = matches!(p.source, lightcraft_catalog::Source::ApplePhotos { .. });
+        (proxy || p.from_photos.is_some()).then_some((p.from_photos.is_some(), p.is_edited()))
+    });
+    let photos_width = if from_photos.is_some() && !cfg!(target_arch = "wasm32") { 2.0 * (4.0 + 30.0) } else { 0.0 };
+    let centre_width = PILL_W + 10.0 + copy_width + 4.0 + 30.0 + photos_width;
     let room = to - from;
     if room < PILL_W {
         return;
@@ -165,6 +171,51 @@ fn centre(app: &mut LightcraftApp, ui: &mut egui::Ui, full: Rect, from: f32, to:
     paint(ui.painter(), gear_r.shrink(7.0), Icon::Gear, t.icon);
     if gresp.clicked() {
         let _ = app.run("dialog.copySettings", json!({}));
+    }
+    if let Some((copied, edited)) = from_photos.filter(|_| photos_width > 0.0) {
+        apple_photos_buttons(app, ui, gear_r.right(), pill.top(), copied, edited);
+    }
+}
+
+/// Sync with Apple Photos and Save Edit to Apple Photos for a photo from Photos, from `x`: each
+/// enabled where it applies (Sync for a copy, Save for an edited photo), its tooltip naming its
+/// shortcut as bound.
+fn apple_photos_buttons(app: &mut LightcraftApp, ui: &mut egui::Ui, x: f32, top: f32, copied: bool, edited: bool) {
+    let t = Tokens::get(ui.ctx());
+    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+    let buttons = [
+        ("applePhotos.sync", "Sync with Apple Photos", Icon::Sync, copied, "icon:applePhotosSync"),
+        ("applePhotos.saveEdit", "Save Edit to Apple Photos", Icon::SaveInto, edited, "icon:applePhotosSave"),
+    ];
+    for (i, (cmd, label, icon, enabled, widget)) in buttons.into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(x + 4.0 + i as f32 * 34.0, top), vec2(30.0, 30.0));
+        let resp = ui.interact(r, egui::Id::unique(widget), if enabled { Sense::click() } else { Sense::hover() });
+        let tip = match crate::shortcuts::shortcut_of(&app.ui.settings.keymap, cmd) {
+            Some(sc) => format!("{} ({})", crate::i18n::tr(label), crate::menubar::shortcut_text(sc, mac)),
+            None => crate::i18n::tr(label).to_string(),
+        };
+        crate::widgets::announce(&resp, tip.clone());
+        register(ui, widget, r);
+        let hovered = enabled && resp.hovered();
+        ui.painter().rect_filled(r, 15.0, if hovered { t.hover } else { t.canvas });
+        paint(
+            ui.painter(),
+            r.shrink(7.0),
+            icon,
+            if !enabled {
+                t.text_disabled
+            } else if hovered {
+                t.text
+            } else {
+                t.icon
+            },
+        );
+        let resp = resp.on_hover_text(tip);
+        if resp.clicked()
+            && let Err(e) = app.run(cmd, json!({}))
+        {
+            app.toast(ui.ctx(), e);
+        }
     }
 }
 

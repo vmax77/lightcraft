@@ -1346,6 +1346,7 @@ fn context_menu_apple_photos(app: &mut LightcraftApp, ui: &mut egui::Ui, id: Pho
         ("applePhotos.edit", "Edit Apple Photos Item", proxy, "button:contextApplePhotosEdit"),
         // an edited item not copied yet is copied first, then saved
         ("applePhotos.saveEdit", "Save Edit to Apple Photos", edited, "button:contextApplePhotosSave"),
+        ("applePhotos.saveAllEdits", "Save All Edits to Apple Photos", true, "button:contextApplePhotosSaveAll"),
         ("applePhotos.restoreEdit", "Restore Edit from Apple Photos", true, "button:contextApplePhotosRestore"),
         ("applePhotos.sync", "Sync with Apple Photos", copy, "button:contextApplePhotosSync"),
     ];

@@ -92,6 +92,11 @@ pub enum Icon {
     Play,
     /// Pause (two bars).
     Pause,
+    /// Sync with Apple Photos: two curved arrows chasing each other round a circle.
+    Sync,
+    /// Save into Apple Photos: an arrow pointing down into a tray (Share is the reverse: an
+    /// arrow up out of a box).
+    SaveInto,
     /// Colour grading, all three wheels: three small circles.
     GradeAll,
     /// Colour grading, shadows wheel: a filled circle.
@@ -238,6 +243,17 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
             pen.line(&[(15.0, 9.0), (15.0, 14.0)]);
             pen.line(&[(3.5, 14.0), (16.5, 14.0)]);
             pen.arc(10.0, 15.5, 1.8, 0.0, 180.0);
+        }
+        Sync => {
+            pen.arc(10.0, 10.0, 6.0, 200.0, 330.0);
+            pen.line(&[(15.29, 4.4), (15.2, 7.0), (12.9, 5.78)]);
+            pen.arc(10.0, 10.0, 6.0, 20.0, 150.0);
+            pen.line(&[(4.71, 15.6), (4.8, 13.0), (7.1, 14.22)]);
+        }
+        SaveInto => {
+            pen.line(&[(3.5, 12.0), (3.5, 17.0), (16.5, 17.0), (16.5, 12.0)]);
+            pen.line(&[(10.0, 2.5), (10.0, 13.0)]);
+            pen.line(&[(6.5, 9.5), (10.0, 13.0), (13.5, 9.5)]);
         }
         Share => {
             pen.line(&[(6.0, 8.0), (4.0, 8.0), (4.0, 17.0), (16.0, 17.0), (16.0, 8.0), (14.0, 8.0)]);

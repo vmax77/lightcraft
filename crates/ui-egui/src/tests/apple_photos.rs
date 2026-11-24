@@ -336,7 +336,7 @@ fn a_photo_from_photos_is_checked_once_in_the_edit_tools_and_sync_says_how_it_we
 /// from Photos in the Edit tools' filmstrip, each enabled where it applies to that photo.
 #[test]
 fn apple_photos_commands_are_a_submenu_and_in_the_filmstrips_right_click_menu() {
-    for id in ["applePhotos.edit", "applePhotos.saveEdit", "applePhotos.restoreEdit", "applePhotos.sync"] {
+    for id in ["applePhotos.edit", "applePhotos.saveEdit", "applePhotos.saveAllEdits", "applePhotos.restoreEdit", "applePhotos.sync"] {
         assert_eq!(lightcraft_engine::cmd::find_command(id).unwrap().menu, ["Photo", "Apple Photos"], "{id}");
     }
     let dir = std::env::temp_dir().join(format!("lc-ui-photos-menu-{}", std::process::id()));
@@ -381,7 +381,7 @@ fn apple_photos_commands_are_a_submenu_and_in_the_filmstrips_right_click_menu() 
     h.step();
     assert!(has(&h, "button:contextApplePhotos"), "the Apple Photos submenu is there");
     click(&mut h, "button:contextApplePhotos");
-    for item in ["Edit", "Save", "Restore", "Sync"] {
+    for item in ["Edit", "Save", "SaveAll", "Restore", "Sync"] {
         assert!(has(&h, &format!("button:contextApplePhotos{item}")), "{item}");
     }
     click(&mut h, "button:contextApplePhotosSave");
@@ -439,5 +439,116 @@ fn saving_an_item_not_copied_yet_copies_it_first() {
     let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
     let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
     assert!(toast.contains(why), "then saved: {toast}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The bottom bar has Sync and Save buttons for a photo from Photos (and none for others), each
+/// enabled where it applies and running its command.
+#[test]
+fn the_bottom_bar_syncs_and_saves_a_photo_from_photos() {
+    let mut demo = demo();
+    demo.request("ui.set", json!({"view": "detail"}), T);
+    demo.settle(SETTLE);
+    assert!(!has(&demo, "icon:applePhotosSave"), "not for a photo that isn't from Photos");
+
+    let dir = std::env::temp_dir().join(format!("lc-ui-photos-bar-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let original = dir.join("Test.photoslibrary").join("originals").join("0").join("U1.jpg");
+    std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+    let pixels = lightcraft_raster::Rgba8::from_bytes(4, 3, &[128u8; 4 * 3 * 4]).unwrap();
+    std::fs::write(&original, lightcraft_engine::export::encode_image(&pixels, &lightcraft_engine::export::ExportOptions::default()).unwrap())
+        .unwrap();
+    let mut session = lightcraft_engine::Session::new().with_fs();
+    session.open_library(dir.join("lib"), false).unwrap();
+    let services = Services { png: None, local_places: Some(Vec::new()), ..Default::default() };
+    let mut h = Headless::new(LightcraftApp::new(session, services), [1600.0, 1000.0], 1.0);
+    let item = PhotosItem {
+        uuid: "U1".into(),
+        file_name: "U1.JPG".into(),
+        format: "JPG".into(),
+        width: 4,
+        height: 3,
+        original: Some(original.to_string_lossy().into()),
+        ..Default::default()
+    };
+    let library = dir.join("Test.photoslibrary").to_string_lossy().into_owned();
+    h.app.session.show_photos(PhotosRead { library, view: PhotosView::All, items: vec![item], albums: Vec::new(), warnings: Vec::new() }).unwrap();
+    let u1 = h.app.session.catalog.photos().next().unwrap().id;
+    h.app.session.execute("library.select", &json!({"ids": [u1.0]})).unwrap();
+    h.request("ui.set", json!({"view": "detail"}), T);
+    h.settle(SETTLE);
+    assert!(has(&h, "icon:applePhotosSync") && has(&h, "icon:applePhotosSave"), "both buttons for a Photos item");
+
+    // edited, then saved from the bar: copied first, then saved
+    h.app.session.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
+    h.app.ui.toast = None;
+    click(&mut h, "icon:applePhotosSave");
+    h.settle(SETTLE);
+    assert!(h.app.session.catalog.photo(u1).unwrap().from_photos.is_some(), "copied");
+    let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    assert!(toast.contains(why), "Save ran: {toast}");
+    // and Sync, now that it is a copy
+    h.app.ui.toast = None;
+    click(&mut h, "icon:applePhotosSync");
+    h.settle(SETTLE);
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    assert!(toast.contains(why), "Sync ran: {toast}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Save All Edits: every Photos item with LightCraft edits not saved there, library-wide (one
+/// not copied yet is copied first), handed to Photos as one batch; nothing to save says so.
+#[test]
+fn save_all_edits_saves_every_unsaved_edit_as_one_batch() {
+    let dir = std::env::temp_dir().join(format!("lc-ui-photos-save-all-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let originals = dir.join("Test.photoslibrary").join("originals").join("0");
+    std::fs::create_dir_all(&originals).unwrap();
+    let pixels = lightcraft_raster::Rgba8::from_bytes(4, 3, &[128u8; 4 * 3 * 4]).unwrap();
+    let jpeg = lightcraft_engine::export::encode_image(&pixels, &lightcraft_engine::export::ExportOptions::default()).unwrap();
+    let mut session = lightcraft_engine::Session::new().with_fs();
+    session.open_library(dir.join("lib"), false).unwrap();
+    let services = Services { png: None, local_places: Some(Vec::new()), ..Default::default() };
+    let mut h = Headless::new(LightcraftApp::new(session, services), [1200.0, 1000.0], 1.0);
+    let mut items = Vec::new();
+    for uuid in ["U1", "U2", "U3"] {
+        let original = originals.join(format!("{uuid}.jpg"));
+        std::fs::write(&original, &jpeg).unwrap();
+        items.push(PhotosItem {
+            uuid: uuid.into(),
+            file_name: format!("{uuid}.JPG"),
+            format: "JPG".into(),
+            width: 4,
+            height: 3,
+            original: Some(original.to_string_lossy().into()),
+            ..Default::default()
+        });
+    }
+    let library = dir.join("Test.photoslibrary").to_string_lossy().into_owned();
+    h.app.session.show_photos(PhotosRead { library, view: PhotosView::All, items, albums: Vec::new(), warnings: Vec::new() }).unwrap();
+    assert!(h.app.run("applePhotos.saveAllEdits", json!({})).unwrap_err().contains("already saved"), "nothing edited yet");
+    let ids: Vec<_> = h.app.session.catalog.photos().map(|p| p.id).collect();
+    // U1 and U2 edited (U2 copied already), U3 not
+    for id in &ids[..2] {
+        h.app.session.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+        h.app.session.execute("develop.set", &json!({"control": "light.exposure", "value": 1.0})).unwrap();
+    }
+    let mut no_fetch = |_: &str, _: &mut dyn std::io::Write| -> Result<u64, String> { Err("on this Mac".into()) };
+    h.app.session.edit_photos_items(&[ids[1]], &mut no_fetch).unwrap();
+    assert_eq!(h.app.session.unsaved_photos_edits().len(), 2);
+
+    let r = h.app.run("applePhotos.saveAllEdits", json!({})).unwrap();
+    assert_eq!(r["afterCopy"], json!([ids[0].0]), "the item not copied yet is copied first: {r}");
+    // nothing goes to Photos until every copy is made: one batch
+    h.step();
+    let list = h.app.session.activity.list();
+    assert!(list.iter().filter(|t| t.kind == "applePhotosSave").count() <= 1, "{list:?}");
+    h.settle(SETTLE);
+    assert!(h.app.session.catalog.photo(ids[0]).unwrap().from_photos.is_some(), "copied");
+    assert!(!h.app.photos_save.busy());
+    let toast = h.app.ui.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    let why = if cfg!(target_os = "macos") { "NSPhotoLibraryUsageDescription" } else { "only available on macOS" };
+    assert!(toast.contains("2 edits not saved") && toast.contains(why), "both in one batch: {toast}");
     let _ = std::fs::remove_dir_all(&dir);
 }

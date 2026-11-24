@@ -171,8 +171,16 @@ Report the toast or JSON, and the macOS and Photos versions.
 
 ## Where the commands are
 
-**Photo ▸ Apple Photos** holds them all: Edit Apple Photos Item, Save Edit to Apple Photos (⌘⌥⇧P), Restore Edit
-from Apple Photos and Sync with Apple Photos. The same submenu is in the right-click menu of a photo from Photos, in
+**Photo ▸ Apple Photos** holds them all: Edit Apple Photos Item, Save Edit to Apple Photos (⌘⌥⇧P), Save All Edits
+to Apple Photos, Restore Edit from Apple Photos and Sync with Apple Photos. For a photo from Photos, the bottom bar
+also has two round buttons after Copy Edit Settings: **Sync** (two curved arrows) and **Save to Photos** (an arrow
+into a tray), each enabled where it applies, its tooltip naming its shortcut.
+
+Save Edit acts on the selection: the photo shown in the Edit tools, or every photo selected in the grid. **Save All
+Edits** is library-wide: every photo from Photos whose LightCraft edit isn't saved there (edited, and its settings
+not the ones last saved), items not copied yet copied first. Either way the photos go to Photos as **one change**,
+so macOS asks once, not once a photo; a photo that can't be rendered (or that Photos edited since) fails alone and
+the toast says how many were saved. The same submenu is in the right-click menu of a photo from Photos, in
 the grid and in the filmstrip under the Edit tools, each item enabled where it applies to that photo (Edit for a
 photo not copied yet, Save for an edited photo, Sync for a copy); other photos don't show it. Save never has to
 wait to be offered: an edited photo whose copy isn't made yet is copied first (under its activity row), then saved.

@@ -1324,6 +1324,7 @@ fn ui_commands_10(app: &mut LightcraftApp, ctx: &egui::Context, id: &str, p: &Va
         "applePhotos.edit" => crate::photos_edit::start(app, p),
         // rendered and handed to Photos on a worker: PhotoKit answers on this (the main) thread
         "applePhotos.saveEdit" => crate::photos_save::start(app, p),
+        "applePhotos.saveAllEdits" => crate::photos_save::start_all(app),
         // Photos is asked on a worker, for the same reason
         "applePhotos.restoreEdit" => crate::photos_restore::start(app, p),
         "applePhotos.sync" => crate::photos_sync::start(app, p),
