@@ -79,6 +79,7 @@ impl LightcraftApp {
         merge::poll(self, ctx);
         import::poll_scan(self, ctx);
         crate::photos_view::poll(self, ctx);
+        crate::photos_view::poll_watch(self, ctx);
         crate::photos_edit::poll(self, ctx);
         crate::photos_save::poll(self, ctx);
         crate::photos_restore::poll(self, ctx);

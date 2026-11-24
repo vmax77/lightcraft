@@ -113,6 +113,8 @@ impl LightcraftApp {
             import: None,
             scan: None,
             photos_task: None,
+            photos_watch: None,
+            photos_watch_every: crate::photos_view::WATCH_EVERY,
             photos_edit: Default::default(),
             photos_save: Default::default(),
             photos_restore: None,

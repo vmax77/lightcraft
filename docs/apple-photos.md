@@ -247,9 +247,14 @@ large exposure or colour changes.
 Photos not copied yet show Photos' edit too, read from the library's files (so for any library, not only the System
 Photo Library): an asset Photos marks edited (`ZADJUSTMENTSSTATE` above 0 in `Photos.sqlite`; `ZHASADJUSTMENTS` in
 older libraries) shows its full-size edited version, `resources/renders/<first character of the UUID>/<UUID>_1_201_a.heic`
-(or `.jpeg`), with Photos' preview of it, `resources/derivatives/<first character>/<UUID>_1_105_c.jpeg`, in the grid
-(both observed in a Photos 11 library on macOS 27.3). Editing it copies that version, and LightCraft's settings build
-on it. When the edited version isn't on this Mac (Optimize Mac Storage), the original shows, as before. Videos show
+(or `.jpeg`), in the grid too (its own small image; observed in a Photos 11 library on
+macOS 27.3; Photos' previews in `resources/derivatives/` were seen to show the original of an edited photo, so they
+aren't used for it). Editing it copies that version, and LightCraft's settings build
+on it. When the edited version isn't on this Mac (Optimize Mac Storage), the original shows, as before. What LightCraft shows follows
+Photos while it is open: while the Apple Photos view is shown, the library's database (`database/Photos.sqlite` and
+its `-wal`) is looked at every 2 seconds, and when Photos changed it (an edit, a revert, a new photo) the view is
+read again; a photo whose file changed drops what was decoded of the old one. A change made while another source is
+shown is read when the view is shown again. Videos show
 their original.
 
 ## Reading an edit back from Photos

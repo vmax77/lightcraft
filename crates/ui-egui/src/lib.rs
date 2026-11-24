@@ -335,6 +335,10 @@ pub struct LightcraftApp {
     pub scan: Option<import::ScanTask>,
     /// An Apple Photos library being read for the sidebar (`applePhotos.show`).
     pub photos_task: Option<photos_view::PhotosTask>,
+    /// Watches the shown Photos library for changes made in Photos.
+    pub photos_watch: Option<photos_view::PhotosWatch>,
+    /// How often [`Self::photos_watch`] looks (tests shorten it).
+    pub photos_watch_every: std::time::Duration,
     /// Apple Photos items being copied into the library to edit them.
     pub photos_edit: photos_edit::PhotosEdit,
     /// Edits being saved back to Apple Photos.
