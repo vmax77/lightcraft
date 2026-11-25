@@ -188,10 +188,15 @@ wait to be offered: an edited photo whose copy isn't made yet is copied first (u
 ## What comes over from Photos
 
 A photo shown from Photos (the sidebar's Apple Photos section) carries what Photos says about it: its title,
-caption, keywords and location, and a **Favourite** as 5 stars. Photos wins: each time the library is read
+caption, keywords and location, the place names Photos worked out from that location (city, state / province,
+country, and a neighbourhood as the sublocation when Photos has one; never the street or postal code), and a
+**Favourite** as 5 stars. The place names come from Photos' stored place record
+(`ZADDITIONALASSETATTRIBUTES.ZREVERSELOCATIONDATA`, an NSKeyedArchiver binary property list whose root's
+`postalAddress` holds `_city`, `_state`, `_country` and `_subLocality`; read only when
+`ZREVERSELOCATIONDATAISVALID`; observed in a Photos 11 library on macOS 27.3). Photos wins: each time the library is read
 again, those fields of a photo not yet copied for editing are replaced with Photos' values, and a photo that is no
 longer a favourite loses its 5 stars (ratings of 1–4 stars stay). Once a photo has been copied to edit it,
-LightCraft leaves its metadata alone. Not carried over yet: people, place names and which albums it is in.
+LightCraft leaves its metadata alone. Not carried over yet: people and which albums it is in.
 
 ## Saving an edit back to Photos
 

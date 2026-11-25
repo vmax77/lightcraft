@@ -85,6 +85,11 @@ pub struct PhotosItem {
     pub keywords: Vec<String>,
     /// `(latitude, longitude)` in degrees.
     pub gps: Option<(f64, f64)>,
+    /// Place names Photos worked out from the location: sublocation, city, state, country.
+    pub location: String,
+    pub city: String,
+    pub state: String,
+    pub country: String,
     pub favourite: bool,
 }
 
@@ -102,6 +107,10 @@ impl PhotosItem {
         meta.caption.clone_from(&self.caption);
         meta.keywords.clone_from(&self.keywords);
         meta.gps = self.gps;
+        meta.location.clone_from(&self.location);
+        meta.city.clone_from(&self.city);
+        meta.state.clone_from(&self.state);
+        meta.country.clone_from(&self.country);
         let rating = match (self.favourite, rating) {
             (true, _) => FAVOURITE_RATING,
             (false, FAVOURITE_RATING) => 0,
@@ -254,6 +263,10 @@ mod native {
             caption: a.caption.as_deref().map(str::trim).unwrap_or_default().to_owned(),
             keywords: super::clean_keywords(&a.keywords),
             gps: a.location.map(|g| (g.latitude, g.longitude)),
+            location: a.place.as_ref().and_then(|p| p.sublocality.clone()).unwrap_or_default(),
+            city: a.place.as_ref().and_then(|p| p.city.clone()).unwrap_or_default(),
+            state: a.place.as_ref().and_then(|p| p.state.clone()).unwrap_or_default(),
+            country: a.place.as_ref().and_then(|p| p.country.clone()).unwrap_or_default(),
             favourite: a.favourite,
         }
     }

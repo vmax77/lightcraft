@@ -165,6 +165,8 @@ pub struct PhotosAsset {
     /// Photos shows an edited version of it (`ZADJUSTMENTSSTATE` above 0 in Photos 11 libraries,
     /// `ZHASADJUSTMENTS` in older ones).
     pub edited: bool,
+    /// The place names Photos worked out from the location ([`place_from_archive`]).
+    pub place: Option<PhotosPlace>,
     /// That edited version, full size, when it is on this Mac:
     /// `resources/renders/<first character of the UUID>/<UUID>_1_201_a.<heic|jpeg|…>` (observed in
     /// a Photos 11 library on macOS 27.3).
@@ -341,7 +343,8 @@ const ASSET_COLUMNS: &[&str] = &[
     "ZHASADJUSTMENTS",
 ];
 /// `ZADDITIONALASSETATTRIBUTES` columns read for each page.
-const ATTRIBUTE_COLUMNS: &[&str] = &["ZORIGINALFILENAME", "ZORIGINALFILESIZE", "ZTITLE", "ZTIMEZONEOFFSET"];
+const ATTRIBUTE_COLUMNS: &[&str] =
+    &["ZORIGINALFILENAME", "ZORIGINALFILESIZE", "ZTITLE", "ZTIMEZONEOFFSET", "ZREVERSELOCATIONDATA", "ZREVERSELOCATIONDATAISVALID"];
 /// Rows read at a time for one page of assets.
 const READ_CHUNK: usize = 2048;
 /// Rows between two looks at the cancel flag while a table is read.
@@ -445,10 +448,15 @@ impl SqliteSource {
             Some(n) => AssetKind::Other(n),
         };
         let edited = table.int(row, "ZADJUSTMENTSSTATE").is_some_and(|n| n > 0) || table.flag(row, "ZHASADJUSTMENTS");
+        let place = attr
+            .filter(|(t, r)| t.flag(r, "ZREVERSELOCATIONDATAISVALID"))
+            .and_then(|(t, r)| t.blob(r, "ZREVERSELOCATIONDATA"))
+            .and_then(place_from_archive);
         let edited_path = if edited { rendered_path(self.library.root(), &uuid) } else { None };
         PhotosAsset {
             edited,
             edited_path,
+            place,
             uuid,
             file_name,
             original_file_name: attr_text("ZORIGINALFILENAME"),
@@ -672,6 +680,13 @@ impl Table {
 
     fn flag(&self, row: &Record, column: &str) -> bool {
         self.int(row, column).is_some_and(|n| n != 0)
+    }
+
+    fn blob<'a>(&self, row: &'a Record, column: &str) -> Option<&'a [u8]> {
+        match self.value(row, column)? {
+            Value::Blob(b) => Some(b),
+            _ => None,
+        }
     }
 }
 
@@ -1041,6 +1056,46 @@ fn original_path(root: &Path, directory: &str, file: &str) -> Option<PathBuf> {
         matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none() && !part.contains(['/', '\\', '\0'])
     };
     (plain(directory) && plain(file)).then(|| root.join("originals").join(directory).join(file))
+}
+
+/// Place names Photos worked out from an asset's location: the parts of its postal address a
+/// photo's metadata has fields for (the street and postal code are left out).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PhotosPlace {
+    /// A neighbourhood or district (Photos often has none).
+    pub sublocality: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub country: Option<String>,
+}
+
+/// Largest stored place record read (Photos' are about 3 KB).
+const MAX_PLACE_BYTES: usize = 256 * 1024;
+
+/// The place names in Photos' stored place record for an asset
+/// (`ZADDITIONALASSETATTRIBUTES.ZREVERSELOCATIONDATA`): a binary property list written by
+/// NSKeyedArchiver whose root object has a `postalAddress` with `_subLocality`, `_city`,
+/// `_state` and `_country` (observed in a Photos 11 library on macOS 27.3). `None` when it can't
+/// be read or names nothing.
+pub fn place_from_archive(bytes: &[u8]) -> Option<PhotosPlace> {
+    if bytes.len() > MAX_PLACE_BYTES {
+        return None;
+    }
+    let archive = plist::Value::from_reader(std::io::Cursor::new(bytes)).ok()?;
+    let archive = archive.as_dictionary()?;
+    let objects = archive.get("$objects")?.as_array()?;
+    let uid = |v: &plist::Value| v.as_uid().and_then(|u| usize::try_from(u.get()).ok());
+    let root = uid(archive.get("$top")?.as_dictionary()?.get("root")?)?;
+    let root = objects.get(root)?.as_dictionary()?;
+    let address = objects.get(uid(root.get("postalAddress")?)?)?.as_dictionary()?;
+    // object 0 is the archive's `$null`
+    let text = |key: &str| {
+        let at = address.get(key).and_then(uid).filter(|&i| i != 0)?;
+        let s = objects.get(at)?.as_string()?.trim();
+        (!s.is_empty()).then(|| s.to_string())
+    };
+    let place = PhotosPlace { sublocality: text("_subLocality"), city: text("_city"), state: text("_state"), country: text("_country") };
+    (place != PhotosPlace::default()).then_some(place)
 }
 
 /// Extensions Photos' full-size edited version has been seen with, most likely first.

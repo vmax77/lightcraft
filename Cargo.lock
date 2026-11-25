@@ -3804,6 +3804,7 @@ dependencies = [
  "lightcraft-testkit",
  "log",
  "miniz_oxide 0.9.1",
+ "plist",
  "rayon",
  "serde",
  "serde_json",

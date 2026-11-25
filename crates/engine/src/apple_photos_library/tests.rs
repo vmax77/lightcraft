@@ -811,3 +811,38 @@ mod companions {
         tables(Layout::Photos6)
     }
 }
+
+/// Photos' stored place record: city, state and country from its postal address; never the
+/// street or postal code; `$null` is no value.
+#[test]
+fn place_names_come_from_photos_stored_place_record() {
+    let place = place_from_archive(&fixture::place_archive("Brest", "Brittany", "France")).unwrap();
+    assert_eq!(place, PhotosPlace { sublocality: None, city: Some("Brest".into()), state: Some("Brittany".into()), country: Some("France".into()) });
+    // blank names are no names; a record naming nothing is no place
+    assert_eq!(place_from_archive(&fixture::place_archive(" ", "", "")), None);
+    // anything else is no place, not an error
+    assert_eq!(place_from_archive(b"not a property list"), None);
+    assert_eq!(place_from_archive(&[]), None);
+    assert_eq!(place_from_archive(&vec![0u8; 300 * 1024]), None, "too large");
+}
+
+/// The reader takes an asset's place names from its attributes row, only when Photos marks the
+/// record valid.
+#[test]
+fn assets_carry_photos_place_names() {
+    for (valid, expected) in [(1, Some("Brest")), (0, None)] {
+        let mut tables = fixture::photos_tables(Layout::Photos6);
+        let attrs = table(&mut tables, "ZADDITIONALASSETATTRIBUTES");
+        let pk_at = attrs.columns.iter().position(|c| c == "ZASSET").unwrap();
+        attrs.columns.extend(["ZREVERSELOCATIONDATA".to_string(), "ZREVERSELOCATIONDATAISVALID".to_string()]);
+        for (_, values) in &mut attrs.rows {
+            // asset A's row (ZASSET 1) gets a place record
+            let place =
+                if matches!(values.get(pk_at), Some(V::Int(1))) { V::Blob(fixture::place_archive("Brest", "Brittany", "France")) } else { V::Null };
+            values.extend([place, V::Int(valid)]);
+        }
+        let library = Library::new(&tables);
+        let a = asset(&open(&library).unwrap(), ASSET_A);
+        assert_eq!(a.place.as_ref().and_then(|p| p.city.as_deref()), expected, "valid = {valid}");
+    }
+}

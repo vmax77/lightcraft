@@ -51,6 +51,9 @@ lightcraft-segment = { workspace = true, optional = true }
 lightcraft-fetch = { workspace = true }
 # capture-time parsing for face recognition (native only)
 chrono = { workspace = true }
+# Apple's binary property lists (Photos' stored place names); MIT, pure Rust, already in the
+# lockfile through craft-update.
+plist = "1.10"
 # The System Photo Library through PhotoKit (macOS; a stub on other native platforms)
 lightcraft-photokit = { workspace = true }
 # free space of the drive holding the preview cache (the low-disk alert; pure Rust: rustix / windows-sys)

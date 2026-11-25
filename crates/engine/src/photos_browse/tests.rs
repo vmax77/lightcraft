@@ -180,6 +180,8 @@ fn a_proxy_mirrors_what_photos_says() {
         title: title.into(),
         keywords: vec!["sea".into()],
         gps: Some((1.0, 2.0)),
+        city: "Brest".into(),
+        country: "France".into(),
         favourite,
         ..Default::default()
     };
@@ -194,6 +196,7 @@ fn a_proxy_mirrors_what_photos_says() {
     assert_eq!(r["updated"], 1, "{r}");
     let p = proxy_of(&s, ASSET_B);
     assert_eq!((p.meta.title.as_str(), p.meta.keywords.as_slice(), p.rating), ("Harbour, renamed", ["sea".to_string()].as_slice(), 5));
+    assert_eq!((p.meta.city.as_str(), p.meta.state.as_str(), p.meta.country.as_str()), ("Brest", "", "France"), "Photos' place names");
     // no longer a favourite: its 5 stars go, other ratings stay
     s.show_photos(read(vec![item("Harbour, renamed", false)])).unwrap();
     assert_eq!(proxy_of(&s, ASSET_B).rating, 0);

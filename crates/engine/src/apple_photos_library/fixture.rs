@@ -12,6 +12,7 @@ pub enum V {
     Int(i64),
     Real(f64),
     Text(String),
+    Blob(Vec<u8>),
 }
 
 pub fn t(s: &str) -> V {
@@ -98,6 +99,10 @@ pub fn record(values: &[V]) -> Vec<u8> {
             V::Text(s) => {
                 header.extend(varint(13 + 2 * s.len() as u64));
                 body.extend(s.as_bytes());
+            }
+            V::Blob(b) => {
+                header.extend(varint(12 + 2 * b.len() as u64));
+                body.extend(b);
             }
         }
     }
@@ -477,4 +482,39 @@ impl Drop for Library {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// A stored place record as Photos writes one (`ZREVERSELOCATIONDATA`): an NSKeyedArchiver binary
+/// property list whose root has a `postalAddress` (made here, laid out as observed in a Photos 11
+/// library; the street is there and must not be read).
+pub fn place_archive(city: &str, state: &str, country: &str) -> Vec<u8> {
+    use plist::{Dictionary, Uid, Value};
+    let dict = |pairs: Vec<(&str, Value)>| Value::Dictionary(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect::<Dictionary>());
+    let uid = |n: u64| Value::Uid(Uid::new(n));
+    let objects = vec![
+        Value::String("$null".into()),
+        dict(vec![("postalAddress", uid(2)), ("isHome", Value::Boolean(false)), ("version", Value::Integer(13.into()))]),
+        dict(vec![
+            ("_city", uid(3)),
+            ("_state", uid(4)),
+            ("_country", uid(5)),
+            ("_subLocality", uid(0)),
+            ("_street", uid(6)),
+            ("_postalCode", uid(7)),
+        ]),
+        Value::String(city.into()),
+        Value::String(state.into()),
+        Value::String(country.into()),
+        Value::String("1 Example Street".into()),
+        Value::String("9999".into()),
+    ];
+    let archive = dict(vec![
+        ("$archiver", Value::String("NSKeyedArchiver".into())),
+        ("$objects", Value::Array(objects)),
+        ("$top", dict(vec![("root", uid(1))])),
+        ("$version", Value::Integer(100000.into())),
+    ]);
+    let mut out = Vec::new();
+    archive.to_writer_binary(&mut out).unwrap();
+    out
 }
