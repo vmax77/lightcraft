@@ -263,3 +263,21 @@ fn one_save_that_cant_be_rendered_fails_alone() {
     let done = run_many(saves, &mut never, &mut photos, &mut |_| {});
     assert!(done[0].2.as_ref().unwrap_err().contains(crate::photos_save::NEWER_IN_PHOTOS));
 }
+
+/// Photos' face boxes are placed on the file Photos placed them on: when the photo's file becomes
+/// another version (an edit made in Photos), they go; boxes from LightCraft stay.
+#[test]
+fn photos_face_boxes_go_when_the_photos_file_changes() {
+    use lightcraft_meta::{Region, RegionKind};
+    let (mut s, d, _library) = edited_copy("photos-sync-faces");
+    let rect = lightcraft_geom::Rect { x0: 0.1, y0: 0.1, x1: 0.2, y1: 0.2 };
+    let from_photos =
+        Region { rect, kind: RegionKind::Face, name: Some("Ada Example".into()), description: Some(crate::photos_browse::FROM_PHOTOS.into()) };
+    let own = Region { rect, kind: RegionKind::Face, name: Some("Mine".into()), description: None };
+    let mut meta = s.catalog.photo(d).unwrap().meta.clone();
+    meta.regions = vec![from_photos, own.clone()];
+    s.apply_system(lightcraft_catalog::Op::SetMeta { id: d, meta: Box::new(meta) }).unwrap();
+    let mut photos = FakePhotos { modified: Some(10.0), edited: true, current: jpeg(30, 20, 90), ..Default::default() };
+    s.sync_photos_items(&[d], &mut photos).unwrap();
+    assert_eq!(s.catalog.photo(d).unwrap().meta.regions, [own], "only LightCraft's box stays");
+}

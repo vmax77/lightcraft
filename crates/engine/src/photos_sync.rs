@@ -279,6 +279,14 @@ impl Session {
         if let Some(op) = crate::cmd::convert::content_op(job.id, p, (*info).clone()) {
             ops.push(op);
         }
+        // Photos' face boxes were placed on the file this replaces (Photos places faces on the
+        // original; an edit may crop it): they go; boxes named or found in LightCraft stay
+        let from_photos = |r: &lightcraft_meta::Region| r.description.as_deref() == Some(crate::photos_browse::FROM_PHOTOS);
+        if p.meta.regions.iter().any(from_photos) {
+            let mut meta = p.meta.clone();
+            meta.regions.retain(|r| !from_photos(r));
+            ops.push(Op::SetMeta { id: job.id, meta: Box::new(meta) });
+        }
         let mut snapshot = None;
         if saved {
             if changed_since && current != DevelopSettings::default() {

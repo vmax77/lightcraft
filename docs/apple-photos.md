@@ -204,7 +204,11 @@ invisible faces left out). Photos wins here too, for its own boxes only: they ar
 box named or found in LightCraft is never replaced. A photo showing an edit made in Photos gets the names but no
 boxes, since Photos places faces on the original, which the edit may have cropped. **Unconfirmed:** how Photos'
 face position maps to a box (height counted from the bottom, size as a fraction of the long side) has to be checked
-by eye on a Mac. Not carried over yet: which albums a photo is in.
+by eye on a Mac. When the photo's file becomes another version (Sync brings in an edit made in Photos, or a revert),
+the boxes from Photos go, as they were placed on the old file; boxes from LightCraft stay. As Photos wins, a box from
+Photos removed in LightCraft on a photo not copied yet comes back the next time the library is read. Faces are not
+filtered by Photos' detection type (`ZDETECTIONTYPE`, whose values are unverified), so a named pet probably comes in
+as a face too. Not carried over yet: which albums a photo is in.
 
 ## Saving an edit back to Photos
 
