@@ -167,6 +167,8 @@ pub struct PhotosAsset {
     pub edited: bool,
     /// The place names Photos worked out from the location ([`place_from_archive`]).
     pub place: Option<PhotosPlace>,
+    /// The named people Photos found in it, with where their faces are ([`PhotosFace`]).
+    pub faces: Vec<PhotosFace>,
     /// That edited version, full size, when it is on this Mac:
     /// `resources/renders/<first character of the UUID>/<UUID>_1_201_a.<heic|jpeg|…>` (observed in
     /// a Photos 11 library on macOS 27.3).
@@ -285,6 +287,8 @@ pub struct SqliteSource {
     by_uuid: HashMap<Box<str>, usize>,
     /// Keyword titles by asset `Z_PK`, sorted and without duplicates.
     keywords: HashMap<i64, Vec<String>>,
+    /// Named people's faces by asset `Z_PK` ([`read_faces`]).
+    faces: HashMap<i64, Vec<PhotosFace>>,
     resources: Resources,
     companion_files: HashMap<String, PathBuf>,
     albums: Vec<PhotosAlbum>,
@@ -475,6 +479,7 @@ impl SqliteSource {
             title: attr_text("ZTITLE"),
             caption,
             keywords: self.keywords.get(&pk).cloned().unwrap_or_default(),
+            faces: self.faces.get(&pk).cloned().unwrap_or_default(),
             availability: self.resources.original.get(&pk).copied().unwrap_or(Availability::Unknown),
             paired_original,
             live_video,
@@ -794,6 +799,7 @@ fn read_library(library: &PhotosLibrary, snapshot: Snapshot, cancel: &AtomicBool
         assets.asset_of_attributes.extend(attributes.asset_of.iter().map(|(&attr, &asset)| (attr, asset)));
     }
     let keywords = read_keywords(&reader, &assets.asset_of_attributes, &mut warnings)?;
+    let faces = read_faces(&reader, &mut warnings)?;
     let companion_files = companion_files(library, &assets.companion_dirs, &mut warnings);
     let (albums, album_pks) = read_albums(&reader, &mut warnings)?;
     let album_assets = read_album_assets(&reader, &album_pks, &assets.by_pk, &mut warnings)?;
@@ -807,6 +813,7 @@ fn read_library(library: &PhotosLibrary, snapshot: Snapshot, cancel: &AtomicBool
         index: assets.index,
         by_uuid: assets.by_uuid,
         keywords,
+        faces,
         resources,
         companion_files,
         albums,
@@ -917,6 +924,57 @@ fn read_attributes(
 }
 
 /// Keyword titles by asset `Z_PK`, sorted and without duplicates.
+/// Named people's faces by asset `Z_PK`, from `ZPERSON` and `ZDETECTEDFACE` (Photos 11 on macOS
+/// 27.3: a face's asset in `ZASSETFORFACE`, its person in `ZPERSONFORFACE`). A person merged into
+/// another (`ZMERGETARGETPERSON`) is that other. Faces without a named person, hidden, in the
+/// trash or of an asset not shown are left out.
+fn read_faces(reader: &TableReader<'_>, warnings: &mut Vec<String>) -> Result<HashMap<i64, Vec<PhotosFace>>, PhotosError> {
+    let (Some(people), Some(faces)) = (reader.find("ZPERSON"), reader.find("ZDETECTEDFACE")) else { return Ok(HashMap::new()) };
+    if !faces.has("ZASSETFORFACE") || !faces.has("ZPERSONFORFACE") || !faces.has("ZCENTERX") || !faces.has("ZCENTERY") {
+        return Ok(HashMap::new());
+    }
+    let mut names: HashMap<i64, String> = HashMap::new();
+    let mut merged_into: HashMap<i64, i64> = HashMap::new();
+    let read = reader.optional_scan(&people, &["Z_PK", "ZFULLNAME", "ZDISPLAYNAME", "ZMERGETARGETPERSON"], warnings, |_, row| {
+        let Some(pk) = people.int(row, "Z_PK") else { return };
+        if let Some(name) = people.text(row, "ZFULLNAME").or_else(|| people.text(row, "ZDISPLAYNAME")) {
+            names.insert(pk, name.trim().to_string());
+        }
+        if let Some(target) = people.int(row, "ZMERGETARGETPERSON").filter(|&t| t != pk) {
+            merged_into.insert(pk, target);
+        }
+    })?;
+    if !read {
+        return Ok(HashMap::new());
+    }
+    let name_of = |mut pk: i64| {
+        for _ in 0..MAX_MERGE_DEPTH {
+            match merged_into.get(&pk) {
+                Some(&next) => pk = next,
+                None => break,
+            }
+        }
+        names.get(&pk).filter(|n| !n.is_empty()).cloned()
+    };
+    let columns = ["ZASSETFORFACE", "ZPERSONFORFACE", "ZCENTERX", "ZCENTERY", "ZSIZE", "ZHIDDEN", "ZISINTRASH", "ZASSETVISIBLE"];
+    let mut out: HashMap<i64, Vec<PhotosFace>> = HashMap::new();
+    let read = reader.optional_scan(&faces, &columns, warnings, |_, row| {
+        let shown = !faces.flag(row, "ZHIDDEN") && !faces.flag(row, "ZISINTRASH") && faces.int(row, "ZASSETVISIBLE").is_none_or(|v| v != 0);
+        let (Some(asset), Some(person)) = (faces.int(row, "ZASSETFORFACE"), faces.int(row, "ZPERSONFORFACE")) else { return };
+        let fraction = |c: &str| faces.real(row, c).filter(|v| (0.0..=1.0).contains(v));
+        let (Some(center_x), Some(center_y)) = (fraction("ZCENTERX"), fraction("ZCENTERY")) else { return };
+        let Some(name) = name_of(person).filter(|_| shown) else { return };
+        let list = out.entry(asset).or_default();
+        if list.len() < MAX_FACES_PER_ASSET {
+            list.push(PhotosFace { name, center_x, center_y, size: fraction("ZSIZE").unwrap_or(0.0) });
+        }
+    })?;
+    if !read {
+        return Ok(HashMap::new());
+    }
+    Ok(out)
+}
+
 fn read_keywords(
     reader: &TableReader<'_>,
     asset_of_attributes: &HashMap<i64, i64>,
@@ -1068,6 +1126,13 @@ pub struct PhotosPlace {
     pub state: Option<String>,
     pub country: Option<String>,
 }
+
+pub use crate::photos_browse::PhotosFace;
+
+/// Deepest chain of merged people (`ZMERGETARGETPERSON`) followed to the person they became.
+const MAX_MERGE_DEPTH: usize = 16;
+/// Most faces kept for one photo.
+const MAX_FACES_PER_ASSET: usize = 256;
 
 /// Largest stored place record read (Photos' are about 3 KB).
 const MAX_PLACE_BYTES: usize = 256 * 1024;

@@ -91,6 +91,49 @@ pub struct PhotosItem {
     pub state: String,
     pub country: String,
     pub favourite: bool,
+    /// The named people Photos found in it (names and where their faces are).
+    pub people: Vec<PhotosFace>,
+}
+
+/// A named person's face in a photo, as Photos stores it (`ZDETECTEDFACE`): the face's centre and
+/// size as fractions of the photo, unconverted (see [`face_rect`] for how they map to a face box).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PhotosFace {
+    /// The person's name (`ZPERSON.ZFULLNAME`, else `ZDISPLAYNAME`).
+    pub name: String,
+    pub center_x: f64,
+    pub center_y: f64,
+    pub size: f64,
+}
+
+/// What a face box carries when it came from Photos, so reading Photos again replaces its own
+/// boxes and never one named or found in LightCraft.
+pub const FROM_PHOTOS: &str = "Apple Photos";
+
+/// Whether Photos' face height (`ZCENTERY`) counts from the photo's bottom edge. Unconfirmed: to
+/// be checked by eye on a Mac (`docs/apple-photos.md`), with [`FACE_SIZE_OF_LONG_SIDE`].
+const FACE_Y_FROM_BOTTOM: bool = true;
+/// Whether Photos' face size (`ZSIZE`) is a fraction of the photo's long side (else its short
+/// side). Unconfirmed, as [`FACE_Y_FROM_BOTTOM`].
+const FACE_SIZE_OF_LONG_SIDE: bool = true;
+
+/// The face box of `face` on a photo of `width` × `height` (as shown, upright), normalized and
+/// y-down as LightCraft's regions are; `None` without a size to go by.
+pub fn face_rect(face: &PhotosFace, width: u32, height: u32) -> Option<lightcraft_geom::Rect> {
+    if width == 0 || height == 0 || !face.size.is_finite() || face.size <= 0.0 {
+        return None;
+    }
+    let (w, h) = (f64::from(width), f64::from(height));
+    let side = if FACE_SIZE_OF_LONG_SIDE { w.max(h) } else { w.min(h) } * face.size;
+    let (half_x, half_y) = (side / w / 2.0, side / h / 2.0);
+    let cy = if FACE_Y_FROM_BOTTOM { 1.0 - face.center_y } else { face.center_y };
+    let r = lightcraft_geom::Rect {
+        x0: (face.center_x - half_x).clamp(0.0, 1.0),
+        y0: (cy - half_y).clamp(0.0, 1.0),
+        x1: (face.center_x + half_x).clamp(0.0, 1.0),
+        y1: (cy + half_y).clamp(0.0, 1.0),
+    };
+    (r.x1 > r.x0 && r.y1 > r.y0).then_some(r)
 }
 
 /// The rating Photos' favourite gives a proxy.
@@ -105,7 +148,31 @@ impl PhotosItem {
         let mut meta = meta.clone();
         meta.title.clone_from(&self.title);
         meta.caption.clone_from(&self.caption);
-        meta.keywords.clone_from(&self.keywords);
+        // Photos' keywords and the names of the people in it, each once
+        let mut keywords = self.keywords.clone();
+        for p in &self.people {
+            if !keywords.iter().any(|k| k.eq_ignore_ascii_case(&p.name)) {
+                keywords.push(p.name.clone());
+            }
+        }
+        meta.keywords = keywords;
+        // Photos' face boxes replace those it gave before; boxes from LightCraft stay. None on the
+        // version Photos shows of an edit made there: its faces are placed on the original, which
+        // the edit may have cropped
+        meta.regions.retain(|r| r.description.as_deref() != Some(FROM_PHOTOS));
+        let edited_version = self.original.as_deref().is_some_and(is_rendered_path);
+        if !edited_version {
+            for p in &self.people {
+                if let Some(rect) = face_rect(p, self.width, self.height) {
+                    meta.regions.push(lightcraft_meta::Region {
+                        rect,
+                        kind: lightcraft_meta::RegionKind::Face,
+                        name: Some(p.name.clone()),
+                        description: Some(FROM_PHOTOS.into()),
+                    });
+                }
+            }
+        }
         meta.gps = self.gps;
         meta.location.clone_from(&self.location);
         meta.city.clone_from(&self.city);
@@ -268,6 +335,7 @@ mod native {
             state: a.place.as_ref().and_then(|p| p.state.clone()).unwrap_or_default(),
             country: a.place.as_ref().and_then(|p| p.country.clone()).unwrap_or_default(),
             favourite: a.favourite,
+            people: a.faces.clone(),
         }
     }
 }

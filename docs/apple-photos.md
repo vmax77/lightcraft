@@ -196,7 +196,15 @@ country, and a neighbourhood as the sublocation when Photos has one; never the s
 `ZREVERSELOCATIONDATAISVALID`; observed in a Photos 11 library on macOS 27.3). Photos wins: each time the library is read
 again, those fields of a photo not yet copied for editing are replaced with Photos' values, and a photo that is no
 longer a favourite loses its 5 stars (ratings of 1–4 stars stay). Once a photo has been copied to edit it,
-LightCraft leaves its metadata alone. Not carried over yet: people and which albums it is in.
+LightCraft leaves its metadata alone. The people named in Photos come over too: each name as a keyword, and each face as a named face box, so the
+person shows in the People view while the Apple Photos view is shown (and, for photos copied into LightCraft, in the
+library's views too). They come from `ZPERSON` (`ZFULLNAME`, else `ZDISPLAYNAME`; a person merged into another is that
+other) and `ZDETECTEDFACE` (`ZASSETFORFACE`, `ZPERSONFORFACE`, `ZCENTERX`, `ZCENTERY`, `ZSIZE`; hidden, trashed and
+invisible faces left out). Photos wins here too, for its own boxes only: they are marked as from Apple Photos, and a
+box named or found in LightCraft is never replaced. A photo showing an edit made in Photos gets the names but no
+boxes, since Photos places faces on the original, which the edit may have cropped. **Unconfirmed:** how Photos'
+face position maps to a box (height counted from the bottom, size as a fraction of the long side) has to be checked
+by eye on a Mac. Not carried over yet: which albums a photo is in.
 
 ## Saving an edit back to Photos
 

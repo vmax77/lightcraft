@@ -405,3 +405,56 @@ fn editing_an_asset_edited_in_photos_copies_the_version_photos_shows() {
     let link = s.catalog.photo(d).unwrap().from_photos.clone().unwrap();
     assert_eq!(link.sync.and_then(|s| s.base_ms), Some(0), "LightCraft's settings build on Photos' edit");
 }
+
+fn person(name: &str) -> crate::apple_photos_library::PhotosFace {
+    crate::apple_photos_library::PhotosFace { name: name.into(), center_x: 0.25, center_y: 0.75, size: 0.2 }
+}
+
+#[test]
+fn photos_face_positions_become_face_boxes() {
+    // centre a quarter across and (counted from the bottom) three quarters up; a fifth of the long side
+    let r = face_rect(&person("Ada Example"), 4032, 3024).unwrap();
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    assert!(close(r.x0, 0.15) && close(r.x1, 0.35), "{r:?}");
+    let half_y = 0.2 * 4032.0 / 3024.0 / 2.0;
+    assert!(close(r.y0, 0.25 - half_y) && close(r.y1, 0.25 + half_y), "{r:?}");
+    assert_eq!(face_rect(&crate::apple_photos_library::PhotosFace { size: 0.0, ..person("x") }, 4032, 3024), None);
+    assert_eq!(face_rect(&person("x"), 0, 3024), None);
+}
+
+/// People in Photos become keywords and face boxes on a proxy; reading Photos again replaces the
+/// boxes it gave and keeps those from LightCraft; the version Photos shows of an edit gets names
+/// but no boxes (its faces are placed on the original).
+#[test]
+fn a_proxy_carries_photos_people_as_keywords_and_face_boxes() {
+    use lightcraft_meta::{Region, RegionKind};
+    let mut item = PhotosItem {
+        uuid: ASSET_B.into(),
+        width: 4032,
+        height: 3024,
+        keywords: vec!["sea".into(), "ada example".into()],
+        people: vec![person("Ada Example"), person("Bo Example")],
+        original: Some("/L.photoslibrary/originals/B/B.heic".into()),
+        ..Default::default()
+    };
+    let own = Region {
+        rect: lightcraft_geom::Rect { x0: 0.6, y0: 0.6, x1: 0.7, y1: 0.7 },
+        kind: RegionKind::Face,
+        name: Some("Mine".into()),
+        description: None,
+    };
+    let mut meta = lightcraft_catalog::Meta { regions: vec![own.clone()], ..Default::default() };
+    for _ in 0..2 {
+        meta = item.mirror(&meta, 0).0;
+    }
+    assert_eq!(meta.keywords, ["sea", "ada example", "Bo Example"], "each name once");
+    let from_photos: Vec<_> = meta.regions.iter().filter(|r| r.description.as_deref() == Some(FROM_PHOTOS)).collect();
+    assert_eq!(from_photos.len(), 2, "replaced, not added again: {:?}", meta.regions);
+    assert!(meta.regions.contains(&own), "LightCraft's own box stays");
+    // edited in Photos: names, no boxes
+    item.original = Some("/L.photoslibrary/resources/renders/B/B_1_201_a.heic".into());
+    let meta = item.mirror(&meta, 0).0;
+    assert!(meta.regions.iter().all(|r| r.description.as_deref() != Some(FROM_PHOTOS)));
+    assert!(meta.regions.contains(&own));
+    assert!(meta.keywords.iter().any(|k| k == "Bo Example"));
+}

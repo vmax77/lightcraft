@@ -846,3 +846,49 @@ fn assets_carry_photos_place_names() {
         assert_eq!(a.place.as_ref().and_then(|p| p.city.as_deref()), expected, "valid = {valid}");
     }
 }
+
+/// Named people's faces come from ZPERSON and ZDETECTEDFACE: a merged person is the one it became;
+/// unnamed, hidden, trashed or invisible faces are left out.
+#[test]
+fn assets_carry_their_named_peoples_faces() {
+    let mut tables = fixture::photos_tables(Layout::Photos6);
+    let mut people = Table::new("ZPERSON", &["Z_PK", "ZFULLNAME", "ZDISPLAYNAME", "ZMERGETARGETPERSON"]);
+    people
+        .row(&[("Z_PK", V::Int(1)), ("ZFULLNAME", t("Ada Example"))])
+        .row(&[("Z_PK", V::Int(2)), ("ZDISPLAYNAME", t("Bo")), ("ZMERGETARGETPERSON", V::Int(3))])
+        .row(&[("Z_PK", V::Int(3)), ("ZDISPLAYNAME", t("Bo Example"))])
+        .row(&[("Z_PK", V::Int(4))])
+        // a merge loop: followed a bounded number of steps, never forever
+        .row(&[("Z_PK", V::Int(5)), ("ZFULLNAME", t("Cy")), ("ZMERGETARGETPERSON", V::Int(6))])
+        .row(&[("Z_PK", V::Int(6)), ("ZFULLNAME", t("Cy")), ("ZMERGETARGETPERSON", V::Int(5))]);
+    let cols = ["Z_PK", "ZASSETFORFACE", "ZPERSONFORFACE", "ZCENTERX", "ZCENTERY", "ZSIZE", "ZHIDDEN", "ZISINTRASH", "ZASSETVISIBLE"];
+    let mut faces = Table::new("ZDETECTEDFACE", &cols);
+    let face = |pk: i64, person: i64, hidden: i64, trash: i64, visible: i64| {
+        vec![
+            ("Z_PK", V::Int(pk)),
+            ("ZASSETFORFACE", V::Int(1)),
+            ("ZPERSONFORFACE", V::Int(person)),
+            ("ZCENTERX", V::Real(0.25)),
+            ("ZCENTERY", V::Real(0.75)),
+            ("ZSIZE", V::Real(0.2)),
+            ("ZHIDDEN", V::Int(hidden)),
+            ("ZISINTRASH", V::Int(trash)),
+            ("ZASSETVISIBLE", V::Int(visible)),
+        ]
+    };
+    faces
+        .row(&face(1, 1, 0, 0, 1))
+        .row(&face(2, 2, 0, 0, 1))
+        .row(&face(3, 4, 0, 0, 1))
+        .row(&face(4, 1, 1, 0, 1))
+        .row(&face(5, 1, 0, 1, 1))
+        .row(&face(6, 1, 0, 0, 0))
+        .row(&face(7, 5, 0, 0, 1));
+    tables.extend([people, faces]);
+    let library = Library::new(&tables);
+    let a = asset(&open(&library).unwrap(), ASSET_A);
+    let names: Vec<&str> = a.faces.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["Ada Example", "Bo Example", "Cy"], "unnamed, hidden, trashed and invisible faces left out");
+    assert_eq!((a.faces[0].center_x, a.faces[0].center_y, a.faces[0].size), (0.25, 0.75, 0.2));
+    assert!(asset(&open(&library).unwrap(), ASSET_B).faces.is_empty());
+}

@@ -76,6 +76,27 @@ fn tables() -> Vec<Table> {
         links.row(&[("Z_1ASSETATTRIBUTES", V::Int(10_000_000 + pk)), ("Z_54KEYWORDS", V::Int(100 + pk % 50))]);
         links.row(&[("Z_1ASSETATTRIBUTES", V::Int(10_000_000 + pk)), ("Z_54KEYWORDS", V::Int(100 + (pk + 7) % 50))]);
     }
+    // 200 named people, 300,000 faces (three on every second photo)
+    let mut people = Table::new("ZPERSON", &["Z_PK", "ZFULLNAME"]);
+    for n in 0..200 {
+        people.row(&[("Z_PK", V::Int(1 + n)), ("ZFULLNAME", t(&format!("Person {n}")))]);
+    }
+    let mut faces = Table::new("ZDETECTEDFACE", &["Z_PK", "ZASSETFORFACE", "ZPERSONFORFACE", "ZCENTERX", "ZCENTERY", "ZSIZE"]);
+    let mut face = 0i64;
+    for pk in pks.clone().filter(|pk| pk % 2 == 0) {
+        for k in 0..3 {
+            face += 1;
+            faces.row(&[
+                ("Z_PK", V::Int(face)),
+                ("ZASSETFORFACE", V::Int(pk)),
+                ("ZPERSONFORFACE", V::Int(1 + (pk + k) % 200)),
+                ("ZCENTERX", V::Real(0.3)),
+                ("ZCENTERY", V::Real(0.6)),
+                ("ZSIZE", V::Real(0.1)),
+            ]);
+        }
+    }
+    tables.extend([people, faces]);
     let albums = table(&mut tables, "ZGENERICALBUM");
     for a in 0..ALBUMS {
         albums.row(&[
@@ -145,7 +166,7 @@ fn photos_scale_200k() {
     assert!(source.warnings().is_empty(), "{:?}", source.warnings());
 
     let started = Instant::now();
-    let (mut seen, mut local, mut cloud, mut captions, mut keyworded, mut live_cloud) = (0, 0, 0, 0, 0, 0);
+    let (mut seen, mut local, mut cloud, mut captions, mut keyworded, mut live_cloud, mut faced) = (0, 0, 0, 0, 0, 0, 0);
     for start in (0..source.asset_count()).step_by(500) {
         for a in source.assets(start, 500).unwrap() {
             seen += 1;
@@ -153,6 +174,7 @@ fn photos_scale_200k() {
             cloud += usize::from(a.availability == Availability::CloudOnly);
             captions += usize::from(a.caption.is_some());
             keyworded += usize::from(!a.keywords.is_empty());
+            faced += a.faces.len();
             live_cloud += usize::from(a.live_video == Companion::CloudOnly);
         }
     }
@@ -162,6 +184,7 @@ fn photos_scale_200k() {
     // the three small-library assets: A is local, B cloud-only, C unknown
     assert_eq!((local, cloud), (n - n / 20 + 1, n / 20 + 1));
     assert_eq!((captions, keyworded, live_cloud), (n / 20 + 1, n / 5 + 1, n / 4));
+    assert_eq!(faced, ASSETS as usize / 2 * 3, "every face read");
 
     let started = Instant::now();
     for i in 0..10_000 {
